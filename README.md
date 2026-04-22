@@ -71,6 +71,25 @@ py-direct call textDocument/documentSymbol \
 
 Manual install (non-Claude-Code users): `ln -s ~/projects/claude-lsp-direct/bin/* ~/.local/bin/`. Any editor or agent that can shell + curl can use this.
 
+## What `install.sh` changes on your system
+
+Full transparency — `scripts/install.sh` is idempotent and only touches paths under `~/.claude/`. Inspect the script before running if you'd rather apply changes manually.
+
+| change | scope | reversible |
+|---|---|---|
+| symlinks `bin/*` → `~/.claude/bin/<wrapper>` (8 files: 6 wrappers + 2 coordinators) | filesystem | `scripts/uninstall.sh` removes them; pre-existing files are backed up to `<file>.bak-<ts>` |
+| symlinks `hooks/*` → `~/.claude/hooks/<hook>` (2 hooks) | filesystem | same — uninstall + backups |
+| merges into `~/.claude/settings.json` `permissions.allow`: `Bash(~/.claude/bin/<wrapper> *)` for each wrapper | Claude Code permission allowlist | `~/.claude/settings.json.bak-<ts>` written before merge; revert by restoring the backup |
+| merges into `~/.claude/settings.json` `sandbox.filesystem.allowWrite`: `~/.cache/<wrapper>/**` for each wrapper, plus `~/.eclipse/**` (jdtls JNI extraction) | Claude Code sandbox | same backup |
+
+Why each sandbox write is needed:
+- `~/.cache/<wrapper>/**` — per-workspace state dir each wrapper uses for `pid/port/workspace/log` files. Hash-scoped; no shared writes.
+- `~/.eclipse/**` — only for `java-direct`. Eclipse Equinox launcher extracts JNI native libraries here on first jdtls start. One-time write, then read-only. Standard Eclipse-tooling path; same dir VSCode-Java, IntelliJ Eclipse plugin, etc. write to.
+
+`install.sh` does NOT touch: shell rc files, your PATH, system directories, network configs, secrets, plugins outside `~/.claude/`. Skip the script entirely if you only want the wrappers — `ln -s` them into any PATH dir and the rest is no-op for non-Claude-Code agents.
+
+Do it at your own discretion — the changes are small and visible, but you own your sandbox config.
+
 ## Tested versions
 
 Exact versions this was developed and benchmarked against. Other versions likely work; these are what's verified.
