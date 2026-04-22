@@ -43,8 +43,11 @@ function createAdapter({
           return runScalafmt(scalafmtCmd, ctx.workspace, ['--version'], null);
         case 'format-stdin': {
           if (typeof p.source !== 'string') throw new Error('scalafmt.format-stdin requires params.source (string)');
+          // scalafmt native (v3.8+) uses --stdin as default mode; the file
+          // hint flag is --assume-filename. scalafmt-dynamic JVM accepts
+          // both; prefer --assume-filename for compatibility across modes.
           const args = ['--stdin'];
-          if (p.filepath) args.push('--stdin-filename', p.filepath);
+          if (p.filepath) args.push('--assume-filename', p.filepath);
           return runScalafmt(scalafmtCmd, ctx.workspace, args, p.source);
         }
         case 'format-files': {

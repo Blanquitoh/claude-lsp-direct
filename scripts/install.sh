@@ -148,7 +148,12 @@ if [ -f "$SETTINGS" ]; then
       "~/.cache/prettier-direct/**",
       "~/.cache/eslint-direct/**",
       "~/.cache/scalafmt-direct/**",
-      "~/.eclipse/**"
+      "~/.eclipse/**",
+      "/private/var/folders/**/.sbt/**",
+      "~/.sbt/**",
+      "~/.ivy2/**",
+      "~/.coursier/**",
+      "/private/var/folders/**/.scala-build/**"
     ] | unique)
   ' "$SETTINGS" > "$TMP" && mv "$TMP" "$SETTINGS"
   log "  merged (backup at $SETTINGS.bak-<ts>)"
@@ -174,7 +179,14 @@ next steps:
        brew install sbt                                      # sbt-direct
        # dotnet-direct — already have dotnet from csharp-ls step
        npm i -g prettier eslint                              # prettier-direct, eslint-direct
-       cs install scalafmt                                   # scalafmt-direct (coursier required)
+       # scalafmt-direct: native binary (arch-specific — picks the right asset from
+       #   https://github.com/scalameta/scalafmt/releases/latest)
+       #   macOS arm64:
+       #     curl -L -o /tmp/sf.zip https://github.com/scalameta/scalafmt/releases/download/v3.11.0/scalafmt-aarch64-apple-darwin.zip \
+       #       && unzip -o /tmp/sf.zip -d ~/.local/bin && chmod +x ~/.local/bin/scalafmt
+       #   macOS x86_64: scalafmt-x86_64-apple-darwin.zip
+       #   Linux:        scalafmt-linux-glibc  (or scalafmt-aarch64-pc-linux.zip on arm)
+       #   alternative:  cs install scalafmt  (requires coursier)
   3. verify:
        ./scripts/verify.sh
   4. read docs/per-language/<lang>.md for each language you use

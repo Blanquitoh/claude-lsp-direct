@@ -56,47 +56,36 @@ limitation" below).
 | soft | `build.sbt`, `project/build.properties`, `project/plugins.sbt`          | next call re-reads (no-op in one-shot mode) |
 | hard | `.env`, `.env.local`, `.sbtopts`, `.jvmopts`                            | coordinator restart (wrapper re-spawns on next call) |
 
-## Sandbox limitation (important)
+## Sandbox interaction
 
-Running under a sandbox that confines file writes to a custom
-`$TMPDIR` (e.g. Claude Code's Bash tool setting `TMPDIR=/tmp/claude-<uid>`)
-will cause sbt to fail at launcher-init:
+The JVM uses the macOS per-user tmp dir (`/private/var/folders/.../T/`)
+for sbt's BootServerSocket regardless of shell `$TMPDIR`, and for
+dependency-cache writes during Ivy / Coursier resolution. Claude
+Bash default sandbox denies writes there. `scripts/install.sh` pre-
+allows the minimum set automatically:
 
+```json
+"sandbox": { "filesystem": { "allowWrite": [
+  "/private/var/folders/**/.sbt/**",
+  "~/.sbt/**",
+  "~/.ivy2/**",
+  "~/.coursier/**"
+]}}
 ```
-java.nio.file.FileSystemException:
-  /var/folders/.../T/.sbt/sbt-socket-<pid>: Operation not permitted
-  at sbt.internal.BootServerSocket.<init>
-```
 
-The JVM reads `java.io.tmpdir` from the macOS per-user tmp dir, not
-the `TMPDIR` env var, and sbt creates its boot-server socket there.
-The socket creation fails under the sandbox even though the socket
-isn't strictly required for one-shot `sbt <task>` invocations.
+With `install.sh` run, sbt-direct works under Claude Bash without any
+per-call bypass flag. Verified against a real multi-module Play 3 /
+Scala 3 project: `sbt-direct call version` reads the project's
+`build.sbt` correctly; `sbt-direct call task
+{"task":"scalafmtCheckAll"}` runs the sbt-scalafmt plugin end-to-end
+and surfaces per-file formatting diffs.
 
-Workarounds tried (and their limits):
-
-- `SBT_OPTS="-Djava.io.tmpdir=$TMPDIR"` — not propagated into the
-  launcher's socket path.
-- `JAVA_TOOL_OPTIONS` — same outcome.
-
-What works:
-
-- **non-sandboxed shell** (regular terminal) — sbt boots cleanly.
-- **Claude Bash with `dangerouslyDisableSandbox: true`** — verified
-  working against a real multi-module Play 3 / Scala 3 project:
-  `sbt-direct call version` reads the project's `build.sbt` correctly;
-  `sbt-direct call task {"task":"scalafmtCheckAll"}` runs the
-  sbt-scalafmt plugin end-to-end and surfaces per-file formatting
-  diffs.
-- **explicit sandbox allowlist** — add
-  `/private/var/folders/**/.sbt/**` to
-  `sandbox.filesystem.allowWrite` in `~/.claude/settings.json`;
-  untested but should unblock the socket path.
-
-The coordinator, bash wrapper, and adapter are sandbox-neutral —
-the block is strictly in sbt's own boot code. SBT_OPTS
-`-Djava.io.tmpdir=$TMPDIR` propagation was attempted and does not
-reach the BootServerSocket path.
+Users who don't run `install.sh` (stand-alone deployment, bespoke
+sandbox config) can either merge the same entries into their
+`~/.claude/settings.json` manually, or call sbt-direct with
+`dangerouslyDisableSandbox: true`. The coordinator, bash wrapper, and
+adapter are all sandbox-neutral — the socket write is the only
+block, and it's strictly in sbt's own boot code.
 
 ## State directory
 

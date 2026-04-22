@@ -6,12 +6,22 @@ Scala API in a long-running JVM) is future work.
 
 ## Install prereq
 
+`scalafmt` CLI binary on `PATH`. Options in order of robustness:
+
 ```bash
-brew install scalafmt           # or: cs install scalafmt
+# native binary (fastest cold-start; arch-specific release asset)
+#   see https://github.com/scalameta/scalafmt/releases/latest
+#   macOS arm64:
+curl -L -o /tmp/sf.zip https://github.com/scalameta/scalafmt/releases/download/v3.11.0/scalafmt-aarch64-apple-darwin.zip \
+  && unzip -o /tmp/sf.zip -d ~/.local/bin \
+  && chmod +x ~/.local/bin/scalafmt
+
+# coursier-launched JVM (drops in on any Scala-dev machine)
+cs install scalafmt
 ```
 
-Either puts a `scalafmt` binary on `PATH`. The binary is a coursier-
-launched JVM wrapper; cold start is 3-5s per call.
+The native binary binds one scalafmt version per download; bump
+when your `.scalafmt.conf`'s `version =` pin changes.
 
 ## Workspace markers (walk-up order)
 
@@ -42,9 +52,18 @@ Results are `{exit, signal, stdout, stderr}` from the subprocess.
 
 ## Timing
 
-- Every call: 3-5s cold (JVM boot + classloader + conf parse).
+- Native binary: 0.3-0.8s per call (no JVM boot).
+- Coursier-launched JVM: 3-5s per call (JVM boot + classloader + conf parse).
 - Persistent-JVM adapter via scalafmt-dynamic would drop warm calls to
-  <300ms; out of scope for v1.
+  <300ms even for the JVM path; out of scope for v1.
+
+## Verified smokes
+
+- `scalafmt-direct call version {}` → `{exit: 0, stdout: "scalafmt 3.11.0"}`.
+- `scalafmt-direct call check-files {"files": ["src/main/scala/Hello.scala"]}` on a
+  version-matched fixture → `{exit: 0, stdout: "All files are formatted with scalafmt :)"}`.
+- `scalafmt-direct call format-stdin {"source": "object A{def   x=1}", "filepath": "A.scala"}` →
+  `{exit: 0, stdout: "object A { def x = 1 }"}`.
 
 ## Invalidation matrix
 
