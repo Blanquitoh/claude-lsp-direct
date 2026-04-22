@@ -25,9 +25,13 @@ BIN_ROOT = HOME / ".claude" / "bin"
 
 # wrappers that support `<wrapper> start <workspace>` — skip read-only
 # daemons / one-shot tools that would pay cold cost without warm benefit.
+# metals-direct intentionally excluded: its adoption path reads
+# <ws>/.metals/mcp.json written by the user's IDE, and SessionStart
+# prewarm can race an IDE that just started — causing port conflicts
+# or adoption of a stale server. Metals callers start it on-demand.
 PREWARM_TARGETS = {
     "py-direct", "ts-direct", "cs-direct", "java-direct",
-    "vue-direct", "metals-direct",
+    "vue-direct",
     "prettier-direct", "eslint-direct",
 }
 

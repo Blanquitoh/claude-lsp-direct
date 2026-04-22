@@ -61,16 +61,27 @@ function createAdapter({
       try {
         const info = JSON.parse(fs.readFileSync(activeJson, 'utf8'));
         if (!info.uri) return null;
-        // probe the running server by running `sbt --client "about"`
-        // with a short timeout; adopt only if it responds cleanly.
+        // Two-stage adopt: (1) mtime age check — if active.json was
+        // written <30min ago and the server hasn't crashed, trust it
+        // without paying for a thin-client handshake. (2) fallback
+        // live probe with 30s timeout (cold sbt clients can spend 10-20s
+        // resolving dependencies before completing `about`).
+        const ageMs = Date.now() - fs.statSync(activeJson).mtimeMs;
+        if (ageMs < 30 * 60 * 1000) {
+          return [{
+            id: 'sbt-server',
+            frame: 'jsonLine',
+            cmd: process.execPath,
+            args: ['-e', 'setInterval(() => {}, 1 << 30)'],
+          }];
+        }
+        // older active.json — server may be stale; verify with a real call.
         const result = await runSbtClient(
           sbtCmd, workspace,
           ['about'],
-          5000,
+          30000,
         );
         if (result.exit === 0) {
-          // server is live; adapter still spawns a tiny keepalive child
-          // so harness's lifecycle works. Flag state.adopted=true.
           return [{
             id: 'sbt-server',
             frame: 'jsonLine',

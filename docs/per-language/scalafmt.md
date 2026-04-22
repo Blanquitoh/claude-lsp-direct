@@ -1,8 +1,9 @@
 # scalafmt — `scalafmt-direct`
 
 Per-workspace scalafmt coordinator. One-shot mode — each `call` runs
-`scalafmt` as a subprocess. Persistent-JVM adapter (scalafmt-dynamic
-Scala API in a long-running JVM) is future work.
+`scalafmt` as a subprocess. The native binary's sub-second cold start
+already beats the <300ms target a persistent-JVM adapter would aim
+for (see "Why no persistent-JVM adapter" below).
 
 ## Install prereq
 
@@ -54,8 +55,6 @@ Results are `{exit, signal, stdout, stderr}` from the subprocess.
 
 - Native binary: 0.3-0.8s per call (no JVM boot).
 - Coursier-launched JVM: 3-5s per call (JVM boot + classloader + conf parse).
-- Persistent-JVM adapter via scalafmt-dynamic would drop warm calls to
-  <300ms even for the JVM path; out of scope for v1.
 
 ## Verified smokes
 
