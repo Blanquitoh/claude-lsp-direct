@@ -18,11 +18,16 @@ function createAdapter({
     triggers,
 
     preload(workspace) {
+      const paths = [workspace];
       try {
-        const localPath = require.resolve('eslint', { paths: [workspace] });
-        return require(localPath);
+        const globalRoot = require('child_process').execSync('npm root -g', { encoding: 'utf8' }).trim();
+        if (globalRoot) paths.push(globalRoot);
+      } catch { /* npm absent */ }
+      try {
+        const resolved = require.resolve('eslint', { paths });
+        return require(resolved);
       } catch {
-        return require('eslint'); // throws if not installed anywhere
+        return require('eslint');
       }
     },
 

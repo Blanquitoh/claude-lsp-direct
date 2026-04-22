@@ -22,13 +22,18 @@ function createAdapter({
     triggers,
 
     preload(workspace) {
-      // resolve prettier from the workspace node_modules first, falling
-      // back to globally-installed (in case user has `npm i -g prettier`).
+      // resolve prettier from the workspace node_modules first, then
+      // the user's global npm root, then the script's own require path.
+      const paths = [workspace];
       try {
-        const localPath = require.resolve('prettier', { paths: [workspace] });
-        return require(localPath);
+        const globalRoot = require('child_process').execSync('npm root -g', { encoding: 'utf8' }).trim();
+        if (globalRoot) paths.push(globalRoot);
+      } catch { /* npm absent — fall through */ }
+      try {
+        const resolved = require.resolve('prettier', { paths });
+        return require(resolved);
       } catch {
-        return require('prettier'); // throws if not installed anywhere
+        return require('prettier'); // final fallback; throws if nothing found
       }
     },
 

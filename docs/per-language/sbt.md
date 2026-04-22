@@ -79,10 +79,21 @@ Workarounds tried (and their limits):
   launcher's socket path.
 - `JAVA_TOOL_OPTIONS` — same outcome.
 
-What works: invoke `sbt-direct` from a non-sandboxed shell (regular
-terminal), or configure the sandbox to allow writes to
-`/var/folders/*/T/.sbt/`. The coordinator, bash wrapper, and adapter
-are sandbox-neutral — the block is strictly in sbt's own boot code.
+What works:
+
+- **non-sandboxed shell** (regular terminal) — sbt boots cleanly.
+- **Claude Bash with `dangerouslyDisableSandbox: true`** — verified
+  working: `sbt --version` returns `sbt version in this project:
+  1.11.6 / sbt runner version: 1.10.11`.
+- **explicit sandbox allowlist** — add
+  `/private/var/folders/**/.sbt/**` to
+  `sandbox.filesystem.allowWrite` in `~/.claude/settings.json`;
+  untested but should unblock the socket path.
+
+The coordinator, bash wrapper, and adapter are sandbox-neutral —
+the block is strictly in sbt's own boot code. SBT_OPTS
+`-Djava.io.tmpdir=$TMPDIR` propagation was attempted and does not
+reach the BootServerSocket path.
 
 ## State directory
 
