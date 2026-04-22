@@ -25,12 +25,13 @@ function resolveWorkspace(markers, { argvWorkspace, cwd }) {
   return path.resolve(start);
 }
 
-// stateDir — ~/.cache/<toolName>-direct/<shasum12(workspace)>/. Matches
-// the existing bash wrapper convention exactly; also mkdirp's the dir
-// so the caller can write files immediately.
+// stateDir — ~/.cache/<toolName>/<shasum12(workspace)>/. Matches the
+// existing bash wrapper convention exactly (wrappers pass their full
+// name including `-direct` suffix). Also mkdirp's the dir so the
+// caller can write files immediately.
 function stateDir(workspace, toolName) {
-  const envKey = toolName.toUpperCase().replace(/-/g, '_') + '_DIRECT_STATE';
-  const root = process.env[envKey] || path.join(process.env.HOME || '', '.cache', `${toolName}-direct`);
+  const envKey = toolName.toUpperCase().replace(/-/g, '_') + '_STATE';
+  const root = process.env[envKey] || path.join(process.env.HOME || '', '.cache', toolName);
   const hash = crypto.createHash('sha1').update(workspace).digest('hex').slice(0, 12);
   const dir = path.join(root, hash);
   fs.mkdirSync(dir, { recursive: true });
@@ -152,12 +153,12 @@ function invalidationLoop({ stateDir, softTriggers, hardTriggers, workspace, onS
 
     for (const { file, mtime } of all) {
       updates[file] = mtime;
-      if (seeded && baseline[file] !== mtime && baseline[file] !== undefined) {
+      if (seeded && baseline[file] !== mtime) {
+        // fires on both modification of known files AND first-appearance
+        // of a matched trigger file — creating .env.local mid-session is a
+        // real change, not a silent seed.
         if (hard.some(e => e.file === file)) hardChanged.push(file);
         else softChanged.push(file);
-      }
-      if (!(file in baseline)) {
-        baseline[file] = mtime; // seed new files silently
       }
     }
 

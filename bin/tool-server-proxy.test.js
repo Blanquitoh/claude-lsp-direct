@@ -46,7 +46,7 @@ async function httpPost(port, pathname, body) {
 
 test('createProxy — single contentLength child, echo adapter', async () => {
   const workspace = tmp();
-  process.env.ECHO_DIRECT_STATE = tmp();
+  process.env.ECHO_STATE = tmp();
   const port = await freePort();
 
   const child = makeFakeChild();
@@ -84,7 +84,7 @@ test('createProxy — single contentLength child, echo adapter', async () => {
   assert.deepStrictEqual(resp2.body.result, { echoed: 'pong', params: {} });
 
   // calls.log contains entries
-  const stateDirPath = path.join(process.env.ECHO_DIRECT_STATE, require('crypto').createHash('sha1').update(workspace).digest('hex').slice(0, 12));
+  const stateDirPath = path.join(process.env.ECHO_STATE, require('crypto').createHash('sha1').update(workspace).digest('hex').slice(0, 12));
   const logLines = fs.readFileSync(path.join(stateDirPath, 'calls.log'), 'utf8').trim().split('\n');
   assert.strictEqual(logLines.length, 2);
   assert.strictEqual(JSON.parse(logLines[0]).method, 'ping');
@@ -92,13 +92,13 @@ test('createProxy — single contentLength child, echo adapter', async () => {
 
   await new Promise(r => proxy.close(r));
   fs.rmSync(workspace, { recursive: true });
-  fs.rmSync(process.env.ECHO_DIRECT_STATE, { recursive: true });
-  delete process.env.ECHO_DIRECT_STATE;
+  fs.rmSync(process.env.ECHO_STATE, { recursive: true });
+  delete process.env.ECHO_STATE;
 });
 
 test('createProxy — call error surfaces as HTTP 500', async () => {
   const workspace = tmp();
-  process.env.FAIL_DIRECT_STATE = tmp();
+  process.env.FAIL_STATE = tmp();
   const port = await freePort();
   const child = makeFakeChild();
 
@@ -119,6 +119,6 @@ test('createProxy — call error surfaces as HTTP 500', async () => {
 
   await new Promise(r => proxy.close(r));
   fs.rmSync(workspace, { recursive: true });
-  fs.rmSync(process.env.FAIL_DIRECT_STATE, { recursive: true });
-  delete process.env.FAIL_DIRECT_STATE;
+  fs.rmSync(process.env.FAIL_STATE, { recursive: true });
+  delete process.env.FAIL_STATE;
 });

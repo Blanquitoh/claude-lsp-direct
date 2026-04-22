@@ -7,6 +7,7 @@
 'use strict';
 
 const { spawn } = require('child_process');
+const { EventEmitter } = require('events');
 const {
   stateDir,
   serveHttp,
@@ -26,6 +27,7 @@ async function createProxy({ adapter, workspace, port, toolName }) {
   const dir = stateDir(workspace, toolName);
   const log = (...args) => console.error(`[${toolName}]`, ...args);
   const logCall = callLog(dir);
+  const events = new EventEmitter();
 
   // spawn or adopt child processes per adapter
   const adopted = Boolean(adapter.adopt && adapter.adopt(workspace, dir));
@@ -52,14 +54,13 @@ async function createProxy({ adapter, workspace, port, toolName }) {
     proc.stderr.on('data', d => log(`${spec.id}:`, d.toString().trim()));
     proc.on('exit', (code, sig) => {
       log(`${spec.id} exited`, code, sig);
-      // when any child dies, the coordinator itself exits so the wrapper
-      // notices and restarts on next /call
-      for (const c of Object.values(children)) if (c.proc !== proc) c.proc.kill();
-      process.exit(1);
+      // emit an event; entrypoint decides whether to kill the coordinator
+      // process. Defers so tests can use fake children without process.exit
+      events.emit('childExit', { id: spec.id, code, sig });
     });
     proc.on('error', e => {
       log(`spawn ${spec.id} failed:`, e.message);
-      process.exit(1);
+      events.emit('spawnError', { id: spec.id, error: e });
     });
 
     const framer = framing[spec.frame];
@@ -187,7 +188,17 @@ async function createProxy({ adapter, workspace, port, toolName }) {
       };
       process.on('SIGTERM', sigHandler);
       process.on('SIGINT', sigHandler);
-      resolve({ address: server.address(), close: (cb) => server.close(cb) });
+      resolve({
+        address: server.address(),
+        close: (cb) => {
+          for (const c of Object.values(children)) {
+            try { c.proc.kill(); } catch {}
+          }
+          server.close(cb);
+        },
+        on: events.on.bind(events),
+        once: events.once.bind(events),
+      });
     });
   });
 }

@@ -49,13 +49,15 @@ test('resolveWorkspace — no marker falls back to cwd', () => {
 
 test('stateDir — per-workspace hash slot', () => {
   process.env.XYZ_DIRECT_STATE = tmp();
-  const a = stateDir('/workspace/a', 'xyz');
-  const b = stateDir('/workspace/b', 'xyz');
+  const a = stateDir('/workspace/a', 'xyz-direct');
+  const b = stateDir('/workspace/b', 'xyz-direct');
   assert.notStrictEqual(a, b);
   assert.ok(fs.existsSync(a));
   assert.ok(fs.existsSync(b));
   // deterministic
-  assert.strictEqual(a, stateDir('/workspace/a', 'xyz'));
+  assert.strictEqual(a, stateDir('/workspace/a', 'xyz-direct'));
+  // env var derived from toolName uppercase with `-` → `_` plus _STATE
+  assert.ok(a.startsWith(process.env.XYZ_DIRECT_STATE));
   fs.rmSync(process.env.XYZ_DIRECT_STATE, { recursive: true });
   delete process.env.XYZ_DIRECT_STATE;
 });

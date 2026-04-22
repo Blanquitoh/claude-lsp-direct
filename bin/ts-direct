@@ -4,7 +4,9 @@
 set -euo pipefail
 
 STATE_ROOT="${TS_DIRECT_STATE:-$HOME/.cache/ts-direct}"
-PROXY="$HOME/.claude/bin/lsp-stdio-proxy.js"
+PROXY_V1="$HOME/.claude/bin/lsp-stdio-proxy.js"
+PROXY_V2="$HOME/.claude/bin/lsp-stdio-proxy.v2.js"
+PROXY="$([ "${LSP_PROXY_IMPL:-v2}" = "v1" ] && echo "$PROXY_V1" || echo "$PROXY_V2")"
 LSP_BIN="typescript-language-server"
 LSP_ARGS=(--stdio)
 LANG_ID="typescript"
@@ -61,7 +63,7 @@ cmd_start() {
   port="$(free_port)"
   echo "$ws" > "$dir/workspace"
   echo "$port" > "$dir/port"
-  nohup node "$PROXY" --workspace "$ws" --port "$port" --lang-id "$LANG_ID" -- "$LSP_BIN" "${LSP_ARGS[@]}" >"$dir/log" 2>&1 &
+  nohup node "$PROXY" --tool-name ts-direct --workspace "$ws" --port "$port" --lang-id "$LANG_ID" -- "$LSP_BIN" "${LSP_ARGS[@]}" >"$dir/log" 2>&1 &
   pid=$!
   echo "$pid" > "$dir/pid"
   local i=0

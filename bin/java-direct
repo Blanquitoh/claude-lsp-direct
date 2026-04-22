@@ -4,7 +4,9 @@
 set -euo pipefail
 
 STATE_ROOT="${JAVA_DIRECT_STATE:-$HOME/.cache/java-direct}"
-PROXY="$HOME/.claude/bin/lsp-stdio-proxy.js"
+PROXY_V1="$HOME/.claude/bin/lsp-stdio-proxy.js"
+PROXY_V2="$HOME/.claude/bin/lsp-stdio-proxy.v2.js"
+PROXY="$([ "${LSP_PROXY_IMPL:-v2}" = "v1" ] && echo "$PROXY_V1" || echo "$PROXY_V2")"
 LSP_BIN="jdtls"
 LANG_ID="java"
 WORKSPACE_MARKERS=(pom.xml build.gradle.kts build.gradle settings.gradle.kts settings.gradle .project)
@@ -62,7 +64,7 @@ cmd_start() {
   echo "$port" > "$dir/port"
   # jdtls needs a per-workspace -data dir (Eclipse workspace metadata); scope under our state hash for clean stop
   local lsp_args=(-data "$dir/jdt-data")
-  nohup node "$PROXY" --workspace "$ws" --port "$port" --lang-id "$LANG_ID" -- "$LSP_BIN" "${lsp_args[@]}" >"$dir/log" 2>&1 &
+  nohup node "$PROXY" --tool-name java-direct --workspace "$ws" --port "$port" --lang-id "$LANG_ID" -- "$LSP_BIN" "${lsp_args[@]}" >"$dir/log" 2>&1 &
   pid=$!
   echo "$pid" > "$dir/pid"
   local i=0
