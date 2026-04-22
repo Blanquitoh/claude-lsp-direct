@@ -26,7 +26,7 @@ BIN_FILES=(
 )
 # adapters dir symlinked as a whole (one entry per adapter would balloon; the dir is stable)
 BIN_DIRS=(adapters)
-HOOK_FILES=(enforce-lsp-over-grep.py enforce-lsp-workspace-root.py)
+HOOK_FILES=(enforce-lsp-over-grep.py enforce-lsp-workspace-root.py prewarm-direct-wrappers.py)
 TEST_FILES=(test_enforce_lsp_over_grep.py test_enforce_lsp_workspace_root.py)
 
 log() { printf '[install] %s\n' "$*"; }
@@ -155,6 +155,9 @@ if [ -f "$SETTINGS" ]; then
       "~/.coursier/**",
       "/private/var/folders/**/.scala-build/**"
     ] | unique)
+    | .hooks.SessionStart = ((.hooks.SessionStart // []) + [{
+        "command": "python3 ~/.claude/hooks/prewarm-direct-wrappers.py"
+      }] | unique_by(.command))
   ' "$SETTINGS" > "$TMP" && mv "$TMP" "$SETTINGS"
   log "  merged (backup at $SETTINGS.bak-<ts>)"
 else

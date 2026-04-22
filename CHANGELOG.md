@@ -7,6 +7,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [1.2.0] — 2026-04-22
 
 ### Added
+- `bin/adapters/sbt-thin-client.js` — persistent-JVM sbt adapter. Activated via `SBT_DIRECT_MODE=thin-client` or `--mode thin-client`. Coordinator spawns `sbt` in server mode once per workspace and proxies each `/call` through `sbt --client "<task>"`; warm calls land in 200-500ms vs 20-40s one-shot cold. Adoption: attaches to an externally-running `sbt shell` if `target/active.json` + live socket detected. Requires `install.sh` allowlist for ipcsocket paths (pre-merged into `sandbox.filesystem.allowWrite`).
+- `hooks/prewarm-direct-wrappers.py` — SessionStart hook. Iterates `~/.cache/*-direct/*/` slots, probes each with `GET /health`, fires `<wrapper>-direct start <workspace>` in the background for any dead slot. First `call` in a new session is warm.
+- `install.sh` — wires the prewarm hook into `~/.claude/settings.json`'s `hooks.SessionStart` (idempotent, `unique_by(.command)`). `uninstall.sh` removes it symmetrically.
+- `scripts/verify.sh VERIFY_STRICT_SHA=1` — env-gated strict mode for CI. Default (unset/0) treats sha256-body mismatch as a warning so downstream users on different pyright/tsserver/csharp-ls versions don't fail the gate; structural-shape match (top_level + total_nodes) remains hard either way. CI workflow exports `VERIFY_STRICT_SHA=1`.
 - `bin/tool-harness.js` — shared coordinator primitives: `resolveWorkspace`, `stateDir`, `freePort`, `serveHttp`, `invalidationLoop`, `callLog`, plus `framing` readers/writers (contentLength, jsonLine, tsserverMixed) and a `jsonRpcClient` correlation helper
 - `bin/tool-server-proxy.js` — external-child coordinator; adapters declare `children[]`, `init`, `onChildMessage`, `call`, `triggers`
 - `bin/node-formatter-daemon.js` — in-process Node-library coordinator (sibling of tool-server-proxy); adapters declare `preload(workspace)` + `call(req, {pkg, state})`

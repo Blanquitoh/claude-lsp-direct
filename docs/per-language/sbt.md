@@ -1,8 +1,22 @@
 # sbt — `sbt-direct`
 
-Per-workspace sbt coordinator. One-shot mode in v1 — each `call`
-spawns `sbt <task>` as a subprocess. Persistent-JVM adapter (sbt thin
-client over ipcsocket) is future work.
+Per-workspace sbt coordinator with two modes:
+
+| mode | activation | cold call | warm call | requires |
+|---|---|---|---|---|
+| `oneshot` (default) | `SBT_DIRECT_MODE=oneshot` or unset | 20-40s | 20-40s | sbt on PATH |
+| `thin-client` | `SBT_DIRECT_MODE=thin-client` | 20-40s (first call boots server) | 200-500ms (`sbt --client`) | sbt on PATH + `install.sh` allowlist (or `dangerouslyDisableSandbox`) |
+
+The thin-client adapter keeps a persistent sbt server alive per
+workspace. On start, the coordinator spawns `sbt` with
+`-Dsbt.server.forcestart=true` and waits for
+`<workspace>/target/active.json` to appear (up to 90s on fresh
+checkouts). Each `call` thereafter invokes `sbt --client "<cmd>"`
+which reuses that server via the ipcsocket. Adoption: if
+`target/active.json` already exists and its socket responds to a
+5-second probe, the coordinator attaches to the existing server
+instead of spawning a new one — lets `sbt shell` in a terminal
+share state with `sbt-direct` calls.
 
 ## Install prereq
 

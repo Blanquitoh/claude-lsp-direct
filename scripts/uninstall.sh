@@ -23,7 +23,7 @@ BIN_FILES=(
   tool-harness.js tool-server-proxy.js node-formatter-daemon.js
 )
 BIN_DIRS=(adapters)
-HOOK_FILES=(enforce-lsp-over-grep.py enforce-lsp-workspace-root.py)
+HOOK_FILES=(enforce-lsp-over-grep.py enforce-lsp-workspace-root.py prewarm-direct-wrappers.py)
 TEST_FILES=(test_enforce_lsp_over_grep.py test_enforce_lsp_workspace_root.py)
 
 log() { printf '[uninstall] %s\n' "$*"; }
@@ -85,6 +85,7 @@ if [ -f "$SETTINGS" ] && command -v jq >/dev/null; then
       "~/.coursier/**",
       "/private/var/folders/**/.scala-build/**"
     ])
+    | .hooks.SessionStart = ((.hooks.SessionStart // []) | map(select(.command != "python3 ~/.claude/hooks/prewarm-direct-wrappers.py")))
   ' "$SETTINGS" > "$TMP" && mv "$TMP" "$SETTINGS"
 fi
 

@@ -84,9 +84,16 @@ Results are `{exit, signal, stdout, stderr}` from the subprocess.
 └── triggers.json mtime baseline
 ```
 
-## Future work
+## Why no persistent-JVM adapter
 
-- scalafmt-dynamic adapter: coursier-fetch scalafmt-dynamic_2.13, host
-  its `Scalafmt` interface in a stay-open JVM, route calls via
-  JSON-RPC over stdio. Warm calls <300ms; config hot-reload via the
-  dynamic API's `resetConfig`.
+The plan originally earmarked a scalafmt-dynamic in-JVM daemon for
+<300ms warm calls. The native binary beats that floor (0.3-0.8s per
+call, no JVM boot at all), so the JVM-daemon path would be slower AND
+strictly more complex. Verdict: closed by "use the native binary";
+`scalafmt-direct` ships it as the primary install option.
+
+If you must route through a scalafmt-dynamic JVM (for example on a
+platform with no native binary), set `SCALAFMT_CMD=cs launch
+org.scalameta:scalafmt-cli_2.13:<version> --` in the adapter env.
+Each call pays JVM boot; the adapter has no per-call optimization for
+this path.

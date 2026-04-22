@@ -164,9 +164,10 @@ if you'd rather apply changes manually.
 | change | scope | reversible |
 |---|---|---|
 | symlinks `bin/*` → `~/.claude/bin/<wrapper>` (19 files + `adapters/` dir): 11 wrappers, 5 coordinators, 3 shared modules (tool-harness, tool-server-proxy, node-formatter-daemon); `adapters/` linked as a directory | filesystem | `scripts/uninstall.sh` removes them; pre-existing files are backed up to `<file>.bak-<ts>` |
-| symlinks `hooks/*` → `~/.claude/hooks/<hook>` (2 hooks) | filesystem | same — uninstall + backups |
+| symlinks `hooks/*` → `~/.claude/hooks/<hook>` (3 hooks: enforce-lsp-over-grep, enforce-lsp-workspace-root, prewarm-direct-wrappers) | filesystem | same — uninstall + backups |
 | merges into `~/.claude/settings.json` `permissions.allow`: `Bash(~/.claude/bin/<wrapper> *)` for each wrapper | Claude Code permission allowlist | `~/.claude/settings.json.bak-<ts>` written before merge; revert by restoring the backup |
-| merges into `~/.claude/settings.json` `sandbox.filesystem.allowWrite`: `~/.cache/<wrapper>/**` for each wrapper, plus `~/.eclipse/**` (jdtls JNI extraction) | Claude Code sandbox | same backup |
+| merges into `~/.claude/settings.json` `sandbox.filesystem.allowWrite`: `~/.cache/<wrapper>/**` for each wrapper, plus `~/.eclipse/**` (jdtls JNI extraction), plus sbt/ivy/coursier paths (sbt-direct ipcsocket + dependency caches) | Claude Code sandbox | same backup |
+| merges into `~/.claude/settings.json` `hooks.SessionStart` a pre-warm entry that probes + restarts cached direct-wrapper servers | Claude Code hooks | same backup; `unique_by(.command)` idempotent |
 
 Why each sandbox write is needed:
 
