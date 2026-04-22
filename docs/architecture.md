@@ -33,7 +33,7 @@ Thin layer. Resolves workspace (walk-up for language-specific markers), derives 
 Why bash: zero runtime, works out of the box on macOS + Linux, no package install.
 
 ### `bin/lsp-stdio-proxy.js` — shared Node coordinator
-Generic coordinator for any STANDALONE stdio LSP (python, typescript, csharp, and future additions like Go/Rust/Ruby). Args:
+Generic coordinator for any STANDALONE stdio LSP (python, typescript, csharp, java, and future additions like Go/Rust/Ruby). Args:
 ```
 node lsp-stdio-proxy.js --workspace <path> --port <N> --lang-id <id> -- <lsp-cmd> [<lsp-args>...]
 ```
