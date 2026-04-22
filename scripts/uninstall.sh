@@ -86,7 +86,17 @@ if [ -f "$SETTINGS" ] && command -v jq >/dev/null; then
       "~/.coursier/**",
       "/private/var/folders/**/.scala-build/**"
     ])
-    | .hooks.SessionStart = ((.hooks.SessionStart // []) | map(select(.command != "python3 ~/.claude/hooks/prewarm-direct-wrappers.py")))
+    | .hooks.SessionStart = (
+        # Remove any SessionStart entry whose hooks[].command references our prewarm script.
+        # Also drop entries that become empty after the filter.
+        (.hooks.SessionStart // [])
+        | map(
+            if type == "object" and has("hooks") then
+              .hooks |= map(select(.command != "python3 ~/.claude/hooks/prewarm-direct-wrappers.py"))
+            else . end
+          )
+        | map(select(type != "object" or (.hooks // []) != []))
+      )
   ' "$SETTINGS" > "$TMP" && mv "$TMP" "$SETTINGS"
 fi
 

@@ -6,7 +6,8 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CLAUDE="$HOME/.claude"
+# CLAUDE defaults to ~/.claude; override for dry-runs (CLAUDE=/tmp/foo install.sh).
+CLAUDE="${CLAUDE:-$HOME/.claude}"
 
 # bin files (wrappers + coordinators + shared harness modules)
 BIN_FILES=(
@@ -121,7 +122,7 @@ SETTINGS="$CLAUDE/settings.json"
 if [ -f "$SETTINGS" ]; then
   log "merging permissions + sandbox into $SETTINGS"
   cp "$SETTINGS" "$SETTINGS.bak-$(date +%s)"
-  TMP="$(mktemp)"
+  TMP="$(mktemp "${TMPDIR:-/tmp}/install.XXXXXX")"
   jq '
     .permissions.allow = ((.permissions.allow // []) + [
       "Bash(~/.claude/bin/metals-direct *)",
@@ -155,9 +156,17 @@ if [ -f "$SETTINGS" ]; then
       "~/.coursier/**",
       "/private/var/folders/**/.scala-build/**"
     ] | unique)
-    | .hooks.SessionStart = ((.hooks.SessionStart // []) + [{
-        "command": "python3 ~/.claude/hooks/prewarm-direct-wrappers.py"
-      }] | unique_by(.command))
+    | .hooks.SessionStart = (
+        # append only if our command isnt already registered under any existing entrys hooks array.
+        # Claude Code hook schema: each SessionStart entry is {matcher?, hooks: [{type, command, async?}, ...]}
+        if ((.hooks.SessionStart // []) | map(.hooks // []) | flatten | map(.command) | index("python3 ~/.claude/hooks/prewarm-direct-wrappers.py")) then
+          (.hooks.SessionStart // [])
+        else
+          (.hooks.SessionStart // []) + [{
+            "hooks": [{"type": "command", "command": "python3 ~/.claude/hooks/prewarm-direct-wrappers.py"}]
+          }]
+        end
+      )
   ' "$SETTINGS" > "$TMP" && mv "$TMP" "$SETTINGS"
   log "  merged (backup at $SETTINGS.bak-<ts>)"
 else
