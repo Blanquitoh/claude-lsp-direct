@@ -75,6 +75,62 @@ The point isn't the specific numbers — it's the order-of-magnitude
 gap between a persistent HTTP proxy and the minimum cost of a
 per-call tool turn.
 
+### Opt-in wrappers (sbt, dotnet, prettier, eslint, scalafmt)
+
+Measured 2026-04-22 on macOS 26.4.1 arm64, N=3 iterations each. Cold
+= fresh coordinator (state dir wiped); warm = coordinator already
+running. "Bare" = invoking the underlying tool directly from a shell
+(whatever caching that tool's launcher does is already included).
+
+| wrapper | bare tool avg | direct cold avg | direct warm avg | warm vs bare |
+|---|---|---|---|---|
+| `sbt-direct` oneshot | 1661ms ¹ | 4922ms | 3600ms | **slower** — see note |
+| `sbt-direct` bsp | 1661ms ¹ | 1285ms ² | **131ms** | **~13× faster** |
+| `dotnet-direct` | 1172ms ³ | 1739ms | 555ms | **~2× faster** |
+| `prettier-direct` | 211ms | 1278ms | 95ms | **~2× faster** |
+| `eslint-direct` | 274ms | 1252ms | 88ms | **~3× faster** |
+| `scalafmt-direct` | 86ms | 1243ms | 112ms | **~same** (native already fast) |
+
+¹ sbt's own launcher daemon caches classpath across invocations, so
+"bare sbt" numbers range from 207ms (daemon hot) to 4.5s (daemon
+cold). 1661ms is the 3-run average.
+
+² `bsp cold` here measures only the first `/call` after a fresh state
+dir. The underlying sbt JVM was still warm from a prior session on
+this machine. **Genuine from-scratch cold** (new Ivy/Coursier
+resolve + JVM boot + BSP init) is 15-90s on a fresh checkout — once,
+per workspace. All subsequent calls land in the 131ms warm band.
+
+³ MSBuild's build-server persists across invocations automatically, so
+"bare dotnet" is already warm on the 2nd+ call. 1172ms is the average
+of one cold + two warm runs.
+
+### Where direct wrappers actually help
+
+- **sbt bsp warm path** — 131ms vs bare sbt's unpredictable
+  207ms-4.5s range. Biggest win by far.
+- **prettier + eslint warm** — 2-3× faster than bare because the
+  daemon keeps `require('prettier')` / `new ESLint(...)` cached in
+  memory.
+- **LSP wrappers** (py/ts/cs/java/vue) — covered by the LSP table
+  above; the argument is against `LSP()` tool-harness round-trips,
+  not against bare language-server invocation.
+
+### Where direct wrappers don't help (or hurt)
+
+- **sbt oneshot mode** — no persistence, so it strictly adds
+  coordinator overhead on top of bare sbt. Exists only as a fallback
+  for when BSP isn't configured in the workspace. **Use `bsp` mode
+  (`SBT_DIRECT_MODE=bsp`) whenever possible.**
+- **dotnet-direct** — MSBuild's build-server gives bare dotnet the
+  same warm-path benefit. Direct wrapper is within 2× of bare;
+  shipping it is about uniform CLI contract + `calls.log` observability,
+  not speed.
+- **scalafmt-direct** — scalafmt's native binary is already
+  sub-200ms cold. Direct adds coordinator round-trip overhead that
+  cancels the win. Ship it for consistency (and for access to
+  scalafmt from the same harness as the other tools), not speed.
+
 ## Architecture
 
 ```
