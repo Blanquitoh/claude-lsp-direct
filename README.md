@@ -163,7 +163,7 @@ if you'd rather apply changes manually.
 
 | change | scope | reversible |
 |---|---|---|
-| symlinks `bin/*` → `~/.claude/bin/<wrapper>` (8 files: 6 wrappers + 2 coordinators) | filesystem | `scripts/uninstall.sh` removes them; pre-existing files are backed up to `<file>.bak-<ts>` |
+| symlinks `bin/*` → `~/.claude/bin/<wrapper>` (19 files + `adapters/` dir): 11 wrappers, 5 coordinators, 3 shared modules (tool-harness, tool-server-proxy, node-formatter-daemon); `adapters/` linked as a directory | filesystem | `scripts/uninstall.sh` removes them; pre-existing files are backed up to `<file>.bak-<ts>` |
 | symlinks `hooks/*` → `~/.claude/hooks/<hook>` (2 hooks) | filesystem | same — uninstall + backups |
 | merges into `~/.claude/settings.json` `permissions.allow`: `Bash(~/.claude/bin/<wrapper> *)` for each wrapper | Claude Code permission allowlist | `~/.claude/settings.json.bak-<ts>` written before merge; revert by restoring the backup |
 | merges into `~/.claude/settings.json` `sandbox.filesystem.allowWrite`: `~/.cache/<wrapper>/**` for each wrapper, plus `~/.eclipse/**` (jdtls JNI extraction) | Claude Code sandbox | same backup |
@@ -171,11 +171,19 @@ if you'd rather apply changes manually.
 Why each sandbox write is needed:
 
 - `~/.cache/<wrapper>/**` — per-workspace state dir each wrapper uses
-  for `pid/port/workspace/log` files. Hash-scoped; no shared writes.
+  for `pid/port/workspace/log/calls.log/triggers.json` files. Hash-
+  scoped; no shared writes.
 - `~/.eclipse/**` — only for `java-direct`. Eclipse Equinox launcher
   extracts JNI native libraries here on first jdtls start. One-time
   write, then read-only. Standard Eclipse-tooling path; same dir
   VSCode-Java, IntelliJ Eclipse plugin, etc. write to.
+- `/private/var/folders/**/.sbt/**`, `~/.sbt/**`, `~/.ivy2/**`,
+  `~/.coursier/**` — only for `sbt-direct`. sbt's BootServerSocket is
+  created under the macOS per-user tmpdir regardless of `$TMPDIR` env,
+  and Ivy/Coursier cache dependency jars here on first resolve. Native
+  sbt behavior; same dirs any Scala toolchain writes to.
+- `/private/var/folders/**/.scala-build/**` — only for Scala CLI /
+  scala-cli users; safe no-op if you don't use it.
 
 `install.sh` does NOT touch: shell rc files, your PATH, system
 directories, network configs, secrets, plugins outside `~/.claude/`.

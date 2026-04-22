@@ -97,7 +97,9 @@ jobs:
       - name: probe fixtures
         run: bash scripts/verify.sh
 
-      - name: diff baselines (shape + sha gate)
+      - name: diff baselines (strict — shape + sha + outline)
+        env:
+          VERIFY_STRICT_SHA: '1'
         run: bash scripts/verify.sh --diff-baselines
 
   opt-in-probe:
