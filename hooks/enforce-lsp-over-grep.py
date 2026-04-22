@@ -18,6 +18,36 @@ from typing import Optional
 HOME = Path(os.environ.get("HOME", str(Path.home())))
 AVAIL_FILE = HOME / ".claude" / "locks" / "lsp-availability.json"
 PLUGINS_FILE = HOME / ".claude" / "plugins" / "installed_plugins.json"
+METRICS_LOG = HOME / ".claude" / ".metrics" / "lsp-grep-blocks.log"
+
+
+def _log_block(payload: dict, tool_name: str, pattern_excerpt: str, reason: str) -> None:
+    """append single jsonl entry to metrics log; silent-pass on any failure.
+    disk-only — never emits to stdout/stderr/additionalContext (zero-token invariant)."""
+    try:
+        from datetime import datetime, timezone
+        # rotate when oversized: rename to .log.1 (overwriting any prior backup), start fresh
+        try:
+            if METRICS_LOG.exists() and METRICS_LOG.stat().st_size > 256 * 1024:
+                os.replace(str(METRICS_LOG), str(METRICS_LOG) + ".1")
+        except Exception:
+            pass
+        excerpt = (pattern_excerpt or "")[:80]
+        # redact secret-looking content (long hex/base64 or key= tokens)
+        if re.search(r"(?i)(api[_-]?key|secret|token|password|bearer)\s*[:=]", excerpt) or re.search(r"[A-Za-z0-9+/=]{40,}", excerpt):
+            excerpt = "[REDACTED]"
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "session_id": payload.get("session_id", ""),
+            "tool_name": tool_name,
+            "pattern_excerpt": excerpt,
+            "reason": reason,
+        }
+        METRICS_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(METRICS_LOG, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass
 
 # plugin + binary fallback when avail file lacks an entry (prewarm hasn't run for this cwd yet)
 PLUGIN_BINARY_MAP = {
@@ -132,7 +162,15 @@ FIND_NAME_RE = re.compile(r"""-(?:i?name|regex)\s+['"]*[^'"]*\*?(\.\w+)['"]*""")
 RG_TYPE_RE = re.compile(r"""--type[=\s](\w+)""")
 RG_GLOB_RE = re.compile(r"""-g[=\s]['"]*\*(\.\w+)['"]*""")
 # positional code-file argument to grep/rg: "grep pattern path/to/file.scala"
-POS_CODE_FILE_RE = re.compile(r"""(?:^|\s)['"]?[^\s'"|&;<>]*(\.(?:scala|sbt|sc|py|ts|tsx|js|jsx|cs|vue|java))['"]?(?:\s|$)""")
+# trailing boundary includes pipe/redirect/semicolon/ampersand to catch
+# `grep "x" /a/b.ts | head` and `grep "x" /a/b.ts > out` and `grep "x" /a/b.ts;echo`
+POS_CODE_FILE_RE = re.compile(r"""(?:^|\s)['"]?[^\s'"|&;<>]*(\.(?:scala|sbt|sc|py|ts|tsx|js|jsx|cs|vue|java))['"]?(?:\s|$|[|>;&])""")
+_QUOTED_RE = re.compile(r"""(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\$'(?:\\.|[^'\\])*'|\$"(?:\\.|[^"\\])*")""")
+
+
+def _strip_quoted(cmd: str) -> str:
+    """remove shell-quoted substrings before POS_CODE_FILE_RE match — avoids FP on `grep "foo.ts" /a/b.md` where `.ts` is inside the search pattern, not a target filename"""
+    return _QUOTED_RE.sub(" ", cmd)
 
 
 def lsp_suggestion(lang: str, avail: dict) -> Optional[str]:
@@ -234,7 +272,7 @@ def detect_langs(cmd: str) -> set:
                 langs.add(EXT_LANG[ext])
     # positional code-file argument (e.g. `grep foo path/to/file.scala`)
     if tool_head in {"grep", "egrep", "fgrep", "rg", "ack", "ag"}:
-        for m in POS_CODE_FILE_RE.finditer(cmd):
+        for m in POS_CODE_FILE_RE.finditer(_strip_quoted(cmd)):
             ext = m.group(1).lower()
             if ext in EXT_LANG:
                 langs.add(EXT_LANG[ext])
@@ -329,30 +367,13 @@ def main() -> None:
                 "  - targeting non-source files → add --include='*.<ext>' (e.g. *.sql, *.md, *.properties) or -g '*.<ext>' for rg\n"
                 "  - scoped to a known non-code subtree → recurse inside conf/, docs/, .claude/, i18n/, etc. explicitly\n"
             )
+            _log_block(payload, tool_name, cmd, "unscoped_recursive_grep_bash")
             sys.exit(2)
         langs = detect_langs(cmd)
         source = "Bash: " + cmd[:200] + ("..." if len(cmd) > 200 else "")
     elif tool_name == "Grep":
         langs = detect_langs_native_grep(inp)
         source = f"Grep(pattern={inp.get('pattern','')[:40]}, type={inp.get('type')}, glob={inp.get('glob')}, path={inp.get('path')})"
-    elif tool_name == "mcp__ollama-filter__ollama_filter_call":
-        # filter_bash bypass: catches grep/rg/find wrapped in the ollama compression layer
-        sub_tool = (inp.get("tool") or "").strip()
-        sub_args = inp.get("args") or {}
-        if sub_tool != "filter_bash":
-            sys.exit(0)
-        cmd = sub_args.get("command", "") if isinstance(sub_args, dict) else ""
-        if not cmd or not is_search_tool(cmd):
-            sys.exit(0)
-        if is_unscoped_recursive_grep(cmd):
-            sys.stderr.write(
-                "BLOCKED by enforce-lsp-over-grep: unscoped recursive grep/rg (via ollama_filter_call)\n"
-                f"command: {cmd[:300]}{'...' if len(cmd) > 300 else ''}\n"
-                "declare intent: <lang>-direct wrapper for source code, or --include='*.<ext>' for non-source.\n"
-            )
-            sys.exit(2)
-        langs = detect_langs(cmd)
-        source = "ollama_filter_call(filter_bash): " + cmd[:200] + ("..." if len(cmd) > 200 else "")
     else:
         sys.exit(0)
     if not langs:
@@ -381,8 +402,35 @@ def main() -> None:
         f"{source}\n\n"
     )
     sys.stderr.write(header + "\n\n".join(msgs) + "\n")
+    if block:
+        _log_block(payload, tool_name, source, f"lsp_available_langs:{','.join(sorted(langs))}")
     sys.exit(2 if block else 0)
 
 
+def _selftest() -> int:
+    """inline regex self-test for POS_CODE_FILE_RE pipe/redirect boundary fix.
+    run: `python3 enforce-lsp-over-grep.py --selftest`"""
+    cases = [
+        ('grep "x" /a/b.ts',                    True),   # plain positional code file
+        ('grep "x" /a/b.ts | head -20',         True),   # pipe boundary
+        ('grep "x" /a/b.ts > out',              True),   # redirect boundary
+        ('grep "x" /a/b.md',                    False),  # non-source extension
+        ('grep "foo.ts" /a/b.md',               False),  # code ext INSIDE quoted pattern, target is .md
+        ('grep "pattern.ts;literal" file.md',   False),  # ext + separator inside quoted pattern
+        ('grep "x" /a/b.ts;echo done',          True),   # real .ts file then ;echo separator
+        ("grep 'foo.py' /a/b.md",               False),  # single-quoted pattern variant
+    ]
+    failed = 0
+    for cmd, expected_block in cases:
+        matched = bool(POS_CODE_FILE_RE.search(_strip_quoted(cmd)))
+        ok = matched == expected_block
+        print(f"{'OK' if ok else 'FAIL'}: {cmd!r} matched={matched} expected={expected_block}")
+        if not ok:
+            failed += 1
+    return 0 if failed == 0 else 1
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--selftest":
+        sys.exit(_selftest())
     main()

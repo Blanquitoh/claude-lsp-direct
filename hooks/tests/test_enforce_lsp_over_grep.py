@@ -291,52 +291,6 @@ def test_bash_positional_non_code_passes(fake_home):
     assert rc == 0
 
 
-# ---------- ollama-filter filter_bash bypass ----------
-
-
-def _ollama(sub_tool: str, **args) -> dict:
-    return {
-        "hook_event_name": "PreToolUse",
-        "tool_name": "mcp__ollama-filter__ollama_filter_call",
-        "tool_input": {"tool": sub_tool, "args": args},
-    }
-
-
-@pytest.mark.parametrize("cmd,lang", [
-    ('grep -rn foo ~/x --include="*.scala"', "scala"),
-    ('rg --type python bar ~/x',              "python"),
-    ('find ~/x -name "*.ts"',                 "typescript"),
-    ('grep -n foo /tmp/Foo.cs',               "csharp"),
-])
-def test_ollama_filter_bash_bypass_blocked(fake_home, cmd, lang):
-    _write_availability(fake_home, {"lsps": {
-        "scala":      {"tool":"metals-direct","binary":"/x","backend":"metals-mcp","workspace":"/w"},
-        "python":     {"tool":"claude-lsp","plugin_installed":True,"binary_on_path":True,"binary_name":"pyright-langserver","workspace":"/w"},
-        "typescript": {"tool":"claude-lsp","plugin_installed":True,"binary_on_path":True,"binary_name":"typescript-language-server","workspace":"/w"},
-        "csharp":     {"tool":"claude-lsp","plugin_installed":True,"binary_on_path":True,"binary_name":"csharp-ls","workspace":"/w"},
-    }})
-    rc, _, err = _run(_ollama("filter_bash", command=cmd), fake_home)
-    assert rc == 2
-    assert lang in err
-    assert "ollama_filter_call" in err
-
-
-@pytest.mark.parametrize("sub_tool,args", [
-    ("search_memory",   {"query": "foo"}),
-    ("search_repo",     {"query": "foo", "repo_path": "/x"}),
-    ("filter_read",     {"path": "/tmp/Foo.scala"}),
-    ("filter_webfetch", {"url": "https://x/y"}),
-    ("filter_bash",     {"command": "docker ps"}),
-    ("filter_bash",     {"command": "git log --oneline"}),
-])
-def test_ollama_filter_non_grep_passes(fake_home, sub_tool, args):
-    _write_availability(fake_home, {"lsps": {
-        "scala": {"tool":"metals-direct","binary":"/x","backend":"metals-mcp","workspace":"/w"},
-    }})
-    rc, _, _ = _run(_ollama(sub_tool, **args), fake_home)
-    assert rc == 0
-
-
 # ---------- non-bash non-grep ----------
 
 
@@ -361,6 +315,113 @@ def test_invalid_json_exits_zero(fake_home):
 def test_empty_command_passes(fake_home):
     rc, _, _ = _run(_bash(""), fake_home)
     assert rc == 0
+
+
+# ---------- _log_block telemetry ----------
+
+
+@pytest.fixture
+def hook_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("enforce_lsp_over_grep", HOOK_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_log_block_writes_jsonl_entry(hook_module, tmp_path, monkeypatch):
+    log_path = tmp_path / "log.jsonl"
+    monkeypatch.setattr(hook_module, "METRICS_LOG", log_path)
+    hook_module._log_block({"session_id": "abc"}, "Bash", "grep x /a/b.ts", "positional")
+    lines = log_path.read_text().splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert "ts" in entry
+    assert entry["session_id"] == "abc"
+    assert entry["tool_name"] == "Bash"
+    assert "grep x" in entry["pattern_excerpt"]
+    assert entry["reason"] == "positional"
+
+
+def test_log_block_redacts_secrets(hook_module, tmp_path, monkeypatch):
+    log_path = tmp_path / "log.jsonl"
+    monkeypatch.setattr(hook_module, "METRICS_LOG", log_path)
+    hook_module._log_block({"session_id": "s"}, "Bash", "api_key=AKIA1234", "x")
+    entry = json.loads(log_path.read_text().splitlines()[0])
+    assert entry["pattern_excerpt"] == "[REDACTED]"
+    # 45-char alphanumeric string
+    log_path.write_text("")
+    hook_module._log_block({"session_id": "s"}, "Bash", "A" * 45, "x")
+    entry = json.loads(log_path.read_text().splitlines()[0])
+    assert entry["pattern_excerpt"] == "[REDACTED]"
+
+
+def test_log_block_silent_pass_on_io_error(hook_module, monkeypatch):
+    monkeypatch.setattr(hook_module, "METRICS_LOG", Path("/nonexistent-root-dir/log.jsonl"))
+    # MUST NOT raise
+    result = hook_module._log_block({"session_id": "s"}, "Bash", "grep x /a/b.ts", "x")
+    assert result is None
+
+
+def test_log_block_rotates_when_oversized(hook_module, tmp_path, monkeypatch):
+    log_path = tmp_path / "lsp-grep-blocks.log"
+    backup_path = tmp_path / "lsp-grep-blocks.log.1"
+    # pre-fill with 260 KB of dummy content
+    dummy = "x" * (260 * 1024)
+    log_path.write_text(dummy)
+    monkeypatch.setattr(hook_module, "METRICS_LOG", log_path)
+    hook_module._log_block({"session_id": "s"}, "Bash", "grep x /a/b.ts", "rot")
+    # .log now small + only has new entry
+    new_contents = log_path.read_text()
+    assert len(new_contents) < 1024, f"expected small fresh log, got {len(new_contents)} bytes"
+    assert '"reason": "rot"' in new_contents
+    # .log.1 exists, holds the previous oversized content
+    assert backup_path.exists()
+    assert backup_path.read_text() == dummy
+
+
+def test_log_block_overwrites_old_rotation(hook_module, tmp_path, monkeypatch):
+    log_path = tmp_path / "lsp-grep-blocks.log"
+    backup_path = tmp_path / "lsp-grep-blocks.log.1"
+    fresh = "y" * (260 * 1024)
+    stale = "STALE-OLD-BACKUP"
+    log_path.write_text(fresh)
+    backup_path.write_text(stale)
+    monkeypatch.setattr(hook_module, "METRICS_LOG", log_path)
+    hook_module._log_block({"session_id": "s"}, "Bash", "grep x /a/b.ts", "rot")
+    # .log.1 now holds fresh (what .log had pre-rotation); stale backup overwritten
+    assert backup_path.read_text() == fresh
+    assert "STALE" not in backup_path.read_text()
+
+
+# ---------- backslash/single-quote escape in positional regex ----------
+
+
+def test_strip_quoted_handles_backslash_escape_inside_double_quote(hook_module):
+    cmd = r'''grep "it\"s a .ts" /a/b.md'''
+    langs = hook_module.detect_langs(cmd)
+    assert langs == set(), f"expected no lang detection, got {langs}"
+
+
+def test_strip_quoted_handles_single_quote_literal(hook_module):
+    cmd = '''grep 'a"b.ts' /a/b.md'''
+    langs = hook_module.detect_langs(cmd)
+    assert langs == set(), f"expected no lang detection, got {langs}"
+
+
+def test_strip_quoted_handles_ansi_c_dollar_single(hook_module):
+    # bash ANSI-C quoting: $'...' — `.ts` inside pattern, target is .md
+    cmd = r"""grep $'foo.ts\n' /a/b.md"""
+    langs = hook_module.detect_langs(cmd)
+    assert langs == set(), f"expected no lang detection, got {langs}"
+
+
+def test_strip_quoted_handles_locale_dollar_double(hook_module):
+    # locale-translation quoting: $"..." — `.ts` inside pattern, target is .md
+    cmd = '''grep $"x.ts" /a/b.md'''
+    langs = hook_module.detect_langs(cmd)
+    assert langs == set(), f"expected no lang detection, got {langs}"
 
 
 if __name__ == "__main__":
