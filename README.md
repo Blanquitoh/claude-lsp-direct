@@ -1,6 +1,6 @@
 # claude-lsp-direct
 
-Per-workspace LSP proxies over HTTP for **Python**, **TypeScript / JavaScript**, **C#**, **Vue**, **Scala**, **Java**. Sub-100ms steady-state; sidesteps the per-tool-call round-trip that agent harnesses pay. Per-workspace isolation fixes servers that bind `rootUri` at init (e.g. `csharp-ls`).
+Per-workspace LSP proxies over HTTP for **Python**, **TypeScript / JavaScript**, **C#**, **Vue**, **Scala**, **Java**, plus opt-in wrappers for **sbt**, **dotnet**, **prettier**, **eslint**, and **scalafmt**. Sub-100ms steady-state for LSPs; sidesteps the per-tool-call round-trip that agent harnesses pay. Per-workspace isolation fixes servers that bind `rootUri` at init (e.g. `csharp-ls`).
 
 Extends the pattern Angel Blanco ([@NovaMage](https://github.com/NovaMage)) first demonstrated for Scala in [agents-metals-direct-lsp](https://github.com/NovaMage/agents-metals-direct-lsp) across the full set of language servers common in multi-stack monorepos.
 
@@ -34,24 +34,38 @@ The point isn't the specific numbers — it's the order-of-magnitude gap between
 ## Architecture
 
 ```
-CLI → <lang>-direct (bash)
-        │ HTTP POST /lsp { method, params }
+CLI → <tool>-direct (bash)
+        │ HTTP POST /call { method, params }   (/lsp alias kept for back-compat)
         ▼
-      Node coordinator (persistent, per-workspace)
-        │ stdio JSON-RPC (LSP or custom-framed)
+      Per-workspace Node coordinator
+        │ tool-harness + tool-server-proxy OR node-formatter-daemon
         ▼
-      Language server (pyright / ts-ls / csharp-ls / Vue LS / metals-mcp)
+      Backing tool (LSP, build server, formatter library)
 ```
 
-- Thin bash wrapper per language — workspace walk-up, state dir, curl client
-- Shared generic coordinator (`lsp-stdio-proxy.js`) for py/ts/cs; dedicated hybrid coordinator (`vue-direct-coordinator.js`) for Vue v3
-- One process per workspace (hashed state dir at `~/.cache/<name>-direct/<hash>/`)
-- HTTP `/health` for liveness (sandboxed environments deny `kill -0` and `/dev/tcp`)
-- Raw LSP method names, unmodified — except `metals-direct` which exposes `metals-mcp`'s 17-tool MCP surface
+- One bash wrapper per tool — workspace walk-up, state dir, curl client.
+- Shared primitives in `bin/tool-harness.js` (resolveWorkspace, stateDir,
+  serveHttp, invalidationLoop, callLog, framing).
+- Two coordinator modules on the harness:
+  - `bin/tool-server-proxy.js` — external-process tools with stdio
+    framing (LSPs, sbt, dotnet, scalafmt).
+  - `bin/node-formatter-daemon.js` — in-process Node libraries
+    (prettier, eslint).
+- Per-tool behavior in `bin/adapters/<tool>.js`. New tools = new
+  adapter; coordinators unchanged.
+- Auto-reload on config-file changes (`tsconfig.json`, `*.csproj`,
+  etc.) via `workspace/didChangeConfiguration`. Hard-restart on
+  env-frozen triggers (`.env`, `.jvmopts`, `global.json`, …).
+- Per-call JSON log at `<stateDir>/calls.log`.
+- HTTP `/health` for liveness (sandboxed environments deny `kill -0` and `/dev/tcp`).
+- Raw LSP method names for LSPs; named methods for build tools/formatters
+  (`task`, `build`, `format`, `lint-files`, …).
 
-Full spec: [`docs/convention.md`](docs/convention.md) · [`docs/architecture.md`](docs/architecture.md) · [`docs/troubleshooting.md`](docs/troubleshooting.md)
+Full spec: [`docs/convention.md`](docs/convention.md) · [`docs/architecture.md`](docs/architecture.md) · [`docs/troubleshooting.md`](docs/troubleshooting.md) · [`MIGRATION.md`](MIGRATION.md)
 
-Per-language: [Python](docs/per-language/python.md) · [TypeScript](docs/per-language/typescript.md) · [C#](docs/per-language/csharp.md) · [Vue](docs/per-language/vue.md) · [Scala](docs/per-language/scala.md) · [Java](docs/per-language/java.md)
+Per-language: [Python](docs/per-language/python.md) · [TypeScript](docs/per-language/typescript.md) · [C#](docs/per-language/csharp.md) · [Vue](docs/per-language/vue.md) · [Scala (LSP)](docs/per-language/scala.md) · [Java](docs/per-language/java.md)
+
+Per-tool (opt-in): [sbt](docs/per-language/sbt.md) · [dotnet](docs/per-language/dotnet.md) · [prettier + eslint](docs/per-language/node-formatters.md) · [scalafmt](docs/per-language/scalafmt.md)
 
 ## Quickstart
 
