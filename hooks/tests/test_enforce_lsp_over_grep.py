@@ -96,7 +96,6 @@ def test_blocks_when_lsp_available(fake_home, cmd, lang):
 @pytest.mark.parametrize("cmd", [
     'grep -rn foo ~/notes --include="*.md"',
     'grep -rn foo ~/x --include="*.txt"',
-    'grep -rn foo ~/x',
     'find ~/x -name "*.json"',
     'rg --type markdown foo ~/x',
     'rg --type yaml foo ~/x',
@@ -111,6 +110,46 @@ def test_passthrough_non_code_and_non_search(fake_home, cmd):
     }})
     rc, _, _ = _run(_bash(cmd), fake_home)
     assert rc == 0
+
+
+# ---------- unscoped recursive grep ----------
+
+
+@pytest.mark.parametrize("cmd", [
+    'grep -rn foo ~/x',
+    'grep -Rn foo api/',
+    'grep -r foo api/modules/core/src/main/scala/',
+    'rg pattern api/app',
+])
+def test_unscoped_recursive_grep_blocked(fake_home, cmd):
+    _write_availability(fake_home, {})
+    rc, _, err = _run(_bash(cmd), fake_home)
+    assert rc == 2, f"expected BLOCK for: {cmd}\n{err}"
+
+
+def test_find_literal_code_filename_blocked(fake_home):
+    # -name with literal filename carrying a code extension must route the same as -name '*.scala'
+    _write_availability(fake_home, {"lsps": {
+        "scala": {"tool":"metals-direct","binary":"/x","backend":"metals-mcp","workspace":"/w"},
+    }})
+    rc, _, err = _run(_bash('find api/app -name "Foo.scala"'), fake_home)
+    assert rc == 2, f"expected BLOCK\n{err}"
+
+
+@pytest.mark.parametrize("cmd", [
+    'grep -rn foo api/conf/',
+    'grep -rn foo .claude/',
+    'grep -rn foo docs/',
+    'grep -rn foo web/locales/',
+    'grep -rn foo fixtures/',
+    'grep -rn foo api/ --include="*.sql"',
+    'grep -rn foo api/ --include="*.md"',
+    'rg -g "*.yaml" foo api/',
+])
+def test_unscoped_recursive_grep_allowed_when_scoped(fake_home, cmd):
+    _write_availability(fake_home, {})
+    rc, _, err = _run(_bash(cmd), fake_home)
+    assert rc == 0, f"expected PASS for: {cmd}\n{err}"
 
 
 # ---------- warn when LSP missing ----------

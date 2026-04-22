@@ -128,7 +128,7 @@ RG_TYPE_LANG = {
 # patterns detected in shell command strings
 INCLUDE_RE = re.compile(r"""--include[=\s]['"]*\*(\.\w+)['"]*""")
 GLOB_STAR_RE = re.compile(r"""['"]?\*(\.\w{1,5})['"]?""")
-FIND_NAME_RE = re.compile(r"""-(?:i?name|regex)\s+['"]*[^'"]*\*(\.\w+)['"]*""")
+FIND_NAME_RE = re.compile(r"""-(?:i?name|regex)\s+['"]*[^'"]*\*?(\.\w+)['"]*""")
 RG_TYPE_RE = re.compile(r"""--type[=\s](\w+)""")
 RG_GLOB_RE = re.compile(r"""-g[=\s]['"]*\*(\.\w+)['"]*""")
 # positional code-file argument to grep/rg: "grep pattern path/to/file.scala"
@@ -268,6 +268,41 @@ def is_search_tool(cmd: str) -> bool:
     return head in {"grep", "egrep", "fgrep", "rg", "find", "fd", "ack", "ag"}
 
 
+# recursive grep/rg without any file-type scope is an ambiguous-intent bypass of enforce-lsp-over-grep:
+# hook cannot tell if target tree contains source code. force explicit scope declaration.
+SCOPE_FLAGS_RE = re.compile(r"(--include|--exclude|--type[=\s]|-\s*t\s|-\s*g\s|--glob)")
+# path args pointing at a single file (not a directory recursion) → skip
+POS_FILE_ARG_RE = re.compile(r"""\s['"]?[^\s'"|&;<>]*\.(\w{1,6})['"]?(?:\s|$)""")
+# safe-list non-code top-level dirs: if recursion is scoped to conf/, docs/, .github/ etc. → allow
+NON_CODE_DIR_HINT_RE = re.compile(
+    r"""\s['"]?(?:[\w.-]+/)*(?:conf|docs?|\.github|\.claude|i18n|locales?|messages?|migrations?|sql|fixtures?|data|public|static|assets)/[^\s'"|&;<>]*['"]?"""
+)
+
+
+def is_unscoped_recursive_grep(cmd: str) -> bool:
+    """true when grep -r/-R or rg is called without --include/--type/-g and not piped a file list"""
+    stripped = cmd.strip()
+    head = stripped.split()[0] if stripped else ""
+    if head in {"grep", "egrep", "fgrep"}:
+        # require -r or -R flag for recursion
+        if not re.search(r"(?:^|\s)-[A-Za-z]*[rR](?:\s|$|[A-Za-z])", stripped):
+            return False
+    elif head == "rg":
+        pass  # rg defaults to recursive
+    else:
+        return False
+    # explicit scope flag present → not unscoped
+    if SCOPE_FLAGS_RE.search(stripped):
+        return False
+    # POS_FILE_ARG_RE: grep/rg given specific files (.md, .sql, .json, etc.) → not a recursive scan
+    if POS_FILE_ARG_RE.search(stripped):
+        return False
+    # recursion explicitly scoped to a known non-code subtree → allow
+    if NON_CODE_DIR_HINT_RE.search(stripped):
+        return False
+    return True
+
+
 def main() -> None:
     try:
         payload = json.load(sys.stdin)
@@ -281,6 +316,20 @@ def main() -> None:
         cmd = inp.get("command", "")
         if not cmd or not is_search_tool(cmd):
             sys.exit(0)
+        if is_unscoped_recursive_grep(cmd):
+            sys.stderr.write(
+                "BLOCKED by enforce-lsp-over-grep: unscoped recursive grep/rg\n"
+                "philosophy: LSP for all source-code questions (see lib/rules-on-demand/lsp.md § philosophy). "
+                "recursive grep/rg without --include/--type/-g has ambiguous intent — hook cannot tell if target "
+                "tree contains source code, so defaults to MANDATORY-LSP rule.\n"
+                f"Bash: {cmd[:300]}{'...' if len(cmd) > 300 else ''}\n\n"
+                "resolve by declaring intent:\n"
+                "  - targeting source code → use the appropriate <lang>-direct wrapper "
+                "(metals-direct/vue-direct/py-direct/ts-direct/cs-direct/java-direct)\n"
+                "  - targeting non-source files → add --include='*.<ext>' (e.g. *.sql, *.md, *.properties) or -g '*.<ext>' for rg\n"
+                "  - scoped to a known non-code subtree → recurse inside conf/, docs/, .claude/, i18n/, etc. explicitly\n"
+            )
+            sys.exit(2)
         langs = detect_langs(cmd)
         source = "Bash: " + cmd[:200] + ("..." if len(cmd) > 200 else "")
     elif tool_name == "Grep":
@@ -295,6 +344,13 @@ def main() -> None:
         cmd = sub_args.get("command", "") if isinstance(sub_args, dict) else ""
         if not cmd or not is_search_tool(cmd):
             sys.exit(0)
+        if is_unscoped_recursive_grep(cmd):
+            sys.stderr.write(
+                "BLOCKED by enforce-lsp-over-grep: unscoped recursive grep/rg (via ollama_filter_call)\n"
+                f"command: {cmd[:300]}{'...' if len(cmd) > 300 else ''}\n"
+                "declare intent: <lang>-direct wrapper for source code, or --include='*.<ext>' for non-source.\n"
+            )
+            sys.exit(2)
         langs = detect_langs(cmd)
         source = "ollama_filter_call(filter_bash): " + cmd[:200] + ("..." if len(cmd) > 200 else "")
     else:
