@@ -8,7 +8,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLAUDE="$HOME/.claude"
 
-BIN_FILES=(metals-direct vue-direct vue-direct-coordinator.js py-direct ts-direct cs-direct lsp-stdio-proxy.js)
+BIN_FILES=(metals-direct vue-direct vue-direct-coordinator.js py-direct ts-direct cs-direct java-direct lsp-stdio-proxy.js)
 HOOK_FILES=(enforce-lsp-over-grep.py enforce-lsp-workspace-root.py)
 TEST_FILES=(test_enforce_lsp_over_grep.py test_enforce_lsp_workspace_root.py)
 
@@ -94,14 +94,17 @@ if [ -f "$SETTINGS" ]; then
       "Bash(~/.claude/bin/vue-direct *)",
       "Bash(~/.claude/bin/py-direct *)",
       "Bash(~/.claude/bin/ts-direct *)",
-      "Bash(~/.claude/bin/cs-direct *)"
+      "Bash(~/.claude/bin/cs-direct *)",
+      "Bash(~/.claude/bin/java-direct *)"
     ] | unique)
     | .sandbox.filesystem.allowWrite = ((.sandbox.filesystem.allowWrite // []) + [
       "~/.cache/metals-direct/**",
       "~/.cache/vue-direct/**",
       "~/.cache/py-direct/**",
       "~/.cache/ts-direct/**",
-      "~/.cache/cs-direct/**"
+      "~/.cache/cs-direct/**",
+      "~/.cache/java-direct/**",
+      "~/.eclipse/**"
     ] | unique)
   ' "$SETTINGS" > "$TMP" && mv "$TMP" "$SETTINGS"
   log "  merged (backup at $SETTINGS.bak-<ts>)"
