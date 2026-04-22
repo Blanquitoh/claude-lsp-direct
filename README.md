@@ -146,6 +146,38 @@ cd ~/projects/claude-lsp-direct
 Install only the language server(s) you need (see per-language docs
 for version pinning).
 
+### Single-wrapper install (e.g. only Java, only sbt, only prettier)
+
+You still run `./scripts/install.sh` — it's idempotent, only symlinks
+files, costs nothing extra, and keeps updates consistent across all
+wrappers. Then install only the backend(s) your wrapper needs:
+
+| wrapper | install the backend |
+|---|---|
+| `py-direct` | `npm i -g pyright` |
+| `ts-direct` | `npm i -g typescript-language-server typescript` |
+| `cs-direct` | `dotnet tool install -g csharp-ls` |
+| `vue-direct` | `npm i -g @vue/language-server@3.2.6 @vue/typescript-plugin@3.2.6 typescript@5.9.3` |
+| `java-direct` | `brew install jdtls` (macOS) — any JDK 17+ |
+| `metals-direct` | `brew install metals` |
+| `sbt-direct` | `brew install sbt` (or sdkman) |
+| `dotnet-direct` | .NET SDK already present if you use csharp |
+| `prettier-direct` | `npm i -g prettier` (or workspace-local `pnpm add -D prettier`) |
+| `eslint-direct` | `npm i -g eslint` (or workspace-local) |
+| `scalafmt-direct` | native binary via `curl -L https://github.com/scalameta/scalafmt/releases/latest/download/scalafmt-aarch64-apple-darwin.zip` — see [scalafmt docs](docs/per-language/scalafmt.md) |
+
+Then call only the wrapper you want:
+
+```bash
+java-direct call textDocument/documentSymbol \
+  '{"textDocument":{"uri":"file:///path/to/File.java"}}'
+```
+
+Wrappers whose backing binary isn't installed no-op cleanly —
+`java-direct` won't interfere with a Python-only workflow and vice
+versa. `scripts/verify.sh` reports SKIP for those languages, which is
+the intended behavior, not a failure.
+
 ```bash
 py-direct call textDocument/documentSymbol \
   '{"textDocument":{"uri":"file:///path/to/your.py"}}'
