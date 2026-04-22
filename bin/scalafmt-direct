@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+# scalafmt-direct — per-workspace scalafmt coordinator. Each /call
+# runs scalafmt as a one-shot subprocess (no persistent JVM in v1 —
+# scalafmt-dynamic API adapter is future work).
+# subcommands: start [workspace] | call <method> <json-params> [workspace] | stop [workspace] | status | tools [workspace]
+set -euo pipefail
+
+STATE_ROOT="${SCALAFMT_DIRECT_STATE:-$HOME/.cache/scalafmt-direct}"
+COORDINATOR="$HOME/.claude/bin/scalafmt-direct-coordinator.js"
+WORKSPACE_MARKERS=(.scalafmt.conf build.sbt build.sc build.mill)
+
+die() { echo "scalafmt-direct: $*" >&2; exit 1; }
+
+resolve_workspace() {
+  local ws="${1:-}"
+  if [ -n "$ws" ]; then ws="$(cd "$ws" && pwd)"; echo "$ws"; return; fi
+  ws="$PWD"
+  while [ "$ws" != "/" ]; do
+    for marker in "${WORKSPACE_MARKERS[@]}"; do
+      [ -e "$ws/$marker" ] && { echo "$ws"; return; }
+    done
+    ws="$(dirname "$ws")"
+  done
+  echo "$PWD"
+}
+
+state_dir() {
+  local hash
+  hash="$(printf '%s' "$1" | shasum | awk '{print $1}' | cut -c1-12)"
+  echo "$STATE_ROOT/$hash"
+}
+
+free_port() {
+  python3 -c 'import socket; s=socket.socket(); s.bind(("",0)); print(s.getsockname()[1]); s.close()'
+}
+
+state_get() { [ -f "$1/$2" ] && cat "$1/$2" || echo ""; }
+
+port_ready() {
+  curl -fsS -m 2 "http://127.0.0.1:$1/health" >/dev/null 2>&1
+}
+
+server_alive() {
+  local port; port="$(state_get "$1" port)"
+  [ -z "$port" ] && return 1
+  port_ready "$port"
+}
+
+cmd_start() {
+  command -v scalafmt >/dev/null || die "sbt not on PATH — install via brew or coursier (cs install scalafmt)"
+  [ -f "$COORDINATOR" ] || die "coordinator missing: $COORDINATOR"
+  local ws dir port pid
+  ws="$(resolve_workspace "${1:-}")"
+  dir="$(state_dir "$ws")"
+  mkdir -p "$dir"
+  if server_alive "$dir"; then
+    echo "already running: workspace=$ws port=$(state_get "$dir" port) pid=$(state_get "$dir" pid)"
+    return 0
+  fi
+  port="$(free_port)"
+  echo "$ws" > "$dir/workspace"
+  echo "$port" > "$dir/port"
+  nohup node "$COORDINATOR" --tool-name scalafmt-direct --workspace "$ws" --port "$port" >"$dir/log" 2>&1 &
+  pid=$!
+  echo "$pid" > "$dir/pid"
+  local i=0
+  until port_ready "$port"; do
+    sleep 1
+    i=$((i+1))
+    [ "$i" -ge 30 ] && { kill "$pid" 2>/dev/null; die "coordinator did not bind port $port within 30s — check $dir/log"; }
+  done
+  echo "started: workspace=$ws port=$port pid=$pid state=$dir"
+}
+
+cmd_call() {
+  local method="${1:-}"; shift || true
+  local params_json="${1-}"; shift || true
+  [ -z "$params_json" ] && params_json='{}'
+  [ -z "$method" ] && die "usage: scalafmt-direct call <method> '<json-params>' [workspace]"
+  local ws dir port
+  ws="$(resolve_workspace "${1:-}")"
+  dir="$(state_dir "$ws")"
+  server_alive "$dir" || { echo "server not running for $ws — starting..." >&2; cmd_start "$ws" >&2; }
+  port="$(state_get "$dir" port)"
+  local payload
+  payload="$(jq -cn --arg method "$method" --argjson params "$params_json" '{method:$method,params:$params}')"
+  curl -fsS -m 600 "http://localhost:$port/call" -X POST \
+    -H 'Content-Type: application/json' \
+    -d "$payload" || die "scalafmt call failed"
+  echo
+}
+
+cmd_tools() {
+  cat <<EOF
+scalafmt-direct methods (one-shot mode — each call runs scalafmt as a subprocess):
+
+  version        scalafmt --version
+                 params: {}
+
+  format-stdin   scalafmt --stdin [--stdin-filename <path>]
+                 params: { source: "<scala-code>", filepath?: "<path>" }
+                 returns: {exit, signal, stdout, stderr} — stdout is formatted source
+
+  format-files   scalafmt --non-interactive <files...>  (rewrites in place)
+                 params: { files: ["/abs/path/A.scala", "/abs/path/B.scala"] }
+
+  check-files    scalafmt --test --non-interactive <files...>
+                 params: { files: ["/abs/path/A.scala"] }
+
+invoke:
+  scalafmt-direct call version      '{}' [workspace]
+  scalafmt-direct call format-stdin '{"source":"object A{}","filepath":"A.scala"}'
+  scalafmt-direct call check-files  '{"files":["src/main/scala/A.scala"]}'
+
+cold-start per call is 3-5s (scalafmt JVM boot + classloader). A
+persistent-JVM adapter (scalafmt-dynamic API in a long-running JVM) is
+future work.
+EOF
+}
+
+cmd_stop() {
+  local ws dir pid
+  ws="$(resolve_workspace "${1:-}")"
+  dir="$(state_dir "$ws")"
+  pid="$(state_get "$dir" pid)"
+  if [ -n "$pid" ]; then
+    kill "$pid" 2>/dev/null && echo "stopped: pid=$pid workspace=$ws" || echo "kill failed (pid=$pid) — state cleared for $ws"
+  else
+    echo "no pid for $ws"
+  fi
+  rm -f "$dir/pid" "$dir/port"
+}
+
+cmd_status() {
+  [ -d "$STATE_ROOT" ] || { echo "no servers tracked"; return; }
+  local any=0
+  for dir in "$STATE_ROOT"/*/; do
+    [ -d "$dir" ] || continue
+    any=1
+    local ws pid port alive
+    ws="$(state_get "$dir" workspace)"
+    pid="$(state_get "$dir" pid)"
+    port="$(state_get "$dir" port)"
+    alive="dead"
+    [ -n "$port" ] && port_ready "$port" && alive="alive"
+    printf 'workspace=%s  port=%s  pid=%s  %s\n' "$ws" "$port" "$pid" "$alive"
+  done
+  [ "$any" = 0 ] && echo "no servers tracked"
+}
+
+case "${1:-}" in
+  start)  shift; cmd_start "$@" ;;
+  call)   shift; cmd_call "$@" ;;
+  tools)  shift; cmd_tools "$@" ;;
+  stop)   shift; cmd_stop "$@" ;;
+  status) shift; cmd_status "$@" ;;
+  ""|-h|--help)
+    cat <<EOF
+scalafmt-direct — per-workspace scalafmt coordinator
+
+usage:
+  scalafmt-direct start [workspace]
+  scalafmt-direct call <method> '<json-params>' [workspace]
+  scalafmt-direct tools
+  scalafmt-direct stop [workspace]
+  scalafmt-direct status
+
+workspace markers (walk-up order): ${WORKSPACE_MARKERS[*]}
+
+state: $STATE_ROOT/<workspace-hash>/{pid,port,workspace,log,calls.log,triggers.json}
+
+see: docs/per-language/scalafmt.md for caveats (per-call cold-start; scalafmt-dynamic in-JVM adapter is follow-up).
+EOF
+    ;;
+  *) die "unknown subcommand: $1 (try --help)" ;;
+esac
