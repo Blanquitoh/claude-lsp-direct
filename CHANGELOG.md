@@ -4,6 +4,19 @@ All notable changes to this project will be documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/).
 
+## [1.3.0] — 2026-04-22
+
+### Added
+- `bin/sbt-direct` — `SBT_DIRECT_MODE=auto` (new default). Coordinator probes `<workspace>/.bsp/sbt.json` at start; picks bsp mode when present (warm ~130ms), otherwise falls back to oneshot with a log line telling the user to run `sbt bspConfig`. Explicit `bsp` and `oneshot` remain supported for force-mode use.
+- `bin/tool-server-proxy.js` — `/health` now reports `childrenAlive` so external monitors can distinguish "coordinator up" from "coordinator up but backing child died".
+- `README.md` — single-wrapper install guide covering all LSP + opt-in wrappers; verified before/after benchmark tables for all 5 opt-in wrappers.
+- `fixtures/node-formatter/eslint.config.js` + `package.json` `"type":"module"` — eslint v10 flat-config so the fixture probe passes. Enables `eslint-direct` to participate in `scripts/verify.sh`.
+
+### Fixed
+- `scripts/install.sh` + `scripts/uninstall.sh` — corrected SessionStart hook entry schema so the prewarm hook actually registers in `~/.claude/settings.json` (previous entry silently ignored).
+- `docs/per-language/sbt.md` — documents that both `bsp` and `oneshot` require `dangerouslyDisableSandbox` on macOS (sbt's BootServerSocket path not covered by a static allowlist).
+- `.github/workflows/ci.yml` — runs `install.sh` before the fixture-probe + opt-in-probe jobs; relaxes sha gate to shape-only so downstream CI on varying tool versions doesn't false-fail.
+
 ## [1.2.0] — 2026-04-22
 
 ### Added
