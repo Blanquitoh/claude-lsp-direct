@@ -87,6 +87,37 @@ py-direct start /abs/path/to/project
 py-direct call textDocument/hover '{...}' /abs/path/to/project
 ```
 
+## Stale state dirs after worktree-remove cycles
+**Symptom:** `<wrapper> status` shows many `dead` entries from worktrees that no longer exist on disk. Hard to tell at a glance which workspaces are actually live, and grep-based status parsers see noise.
+
+**Reason:** Each `<wrapper> start <ws>` creates a hashed state dir under `~/.cache/<wrapper>/<hash>/`. When the workspace dir is deleted (e.g. `git worktree remove`), the state dir lingers because no event tells the wrapper to clean up.
+
+**Fix:** Run `<wrapper> prune`. Reaps state dirs whose recorded process is dead AND whose port is unreachable. Adopted external servers (running but launched by an IDE) and live-launched servers are preserved.
+
+```bash
+metals-direct prune  # pruned 17 dead state dir(s) from /Users/me/.cache/metals-direct
+ts-direct prune
+py-direct prune
+# … same subcommand on all wrappers
+```
+
+Safe to run any time — won't kill live processes; only removes the bookkeeping for ones that are gone.
+
+## "lsp call failed" — what to do
+**Symptom:** `<wrapper> call <method> ...` returns `curl: (22) The requested URL returned error: 500` followed by `<wrapper>: lsp call failed (method=<X>) — verify method name via '<wrapper> tools' and daemon health via '<wrapper> status'`.
+
+**Reason:** The HTTP 500 originates from the underlying LSP, not the wrapper. Most common causes:
+1. Method name typo or wrong shape (e.g. `textDocument/documentSymbols` vs `textDocument/documentSymbol`).
+2. Malformed `params` JSON — missing `textDocument.uri`, missing `position`, off-by-one line/character (LSP is 0-indexed), missing `context.includeDeclaration` on `references`.
+3. Daemon was alive at probe time but the underlying LSP child crashed or restarted without re-init.
+
+**Fix:** Follow the order the error message suggests:
+1. `<wrapper> tools` — confirm exact method name + canonical params shape.
+2. `<wrapper> status` — confirm daemon `alive` for the workspace you're querying.
+3. If both pass, retry with `--max-time 120` raised, or read `<stateDir>/log` to see what the underlying LSP said.
+
+**Don't fall back to `grep` on a hook block** — the `enforce-lsp-over-grep` hook exists because raw text search misses semantic context. Always come back through the wrapper after fixing the method/args.
+
 ## Repo vs `~/.claude/bin/` out of sync
 **Symptom:** You edited a file in `~/.claude/bin/<lang>-direct` expecting local changes; they don't show up after `git pull`.
 

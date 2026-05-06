@@ -173,6 +173,15 @@ CLI → <tool>-direct (bash)
   from the underlying server), except `metals-direct` which exposes
   `metals-mcp`'s 17-tool MCP surface. Named methods for build tools
   and formatters (`task`, `build`, `format`, `lint-files`, …).
+- Subcommands shared across wrappers: `start`, `call`, `tools`, `stop`,
+  `status`, `prune`. `prune` reaps state dirs whose process is dead
+  and whose port is unreachable — useful after worktree-remove cycles
+  pile up stale entries.
+- Error-message contract: `lsp call failed` and `tools/call failed`
+  surface the failing method name and point at the next debugging
+  step (`<wrapper> tools` to verify method shape, `<wrapper> status`
+  to verify daemon health). Avoid retrying with `grep` on hook block —
+  always come back through the wrapper.
 
 Full spec: [`docs/convention.md`](docs/convention.md) ·
 [`docs/architecture.md`](docs/architecture.md) ·

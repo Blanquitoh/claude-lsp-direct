@@ -4,6 +4,15 @@ All notable changes to this project will be documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- `bin/{metals,py,ts,cs,vue,java}-direct prune` — new subcommand removes state dirs whose recorded process is dead AND whose port is unreachable. Eliminates accumulating "dead" entries in `status` output across worktree-add/worktree-remove cycles. `metals-direct status` now also reports `adopted` (running but launched externally, e.g. by IDE) distinct from `alive` (launched by this wrapper) and `dead`.
+- `bin/cs-roslyn-direct` (scaffold, NOT wired into install) — parallel C# wrapper targeting Microsoft Roslyn Language Server (the binary shipped with VS Code C# Dev Kit) instead of csharp-ls. Goal: ≥10× cold-start improvement on `documentSymbol`. Currently blocked by reverse-RPC gap in `bin/lsp-stdio-proxy.js` (Roslyn LS issues `workspace/configuration` server→client during `initialized` and SIGABRTs without a response). See `docs/per-language/csharp.md` § Roslyn LS scaffold for resumption path.
+
+### Changed
+- `bin/{py,ts,cs,vue,java}-direct` — error message on HTTP 500 from underlying LSP now includes the failed method name AND retry hints (`<wrapper> tools` to verify method shape, `<wrapper> status` to verify daemon health). Previously a bare "lsp call failed" left callers with no recovery signal — observed in equinox session b8957617 audit (2026-05-06) where the orchestrator silently fell back to grep instead of retrying via the wrapper.
+
 ## [1.3.0] — 2026-04-22
 
 ### Added

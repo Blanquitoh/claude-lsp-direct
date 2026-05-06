@@ -87,7 +87,7 @@ cmd_call() {
   payload="$(jq -cn --arg method "$method" --argjson params "$params_json" '{method:$method,params:$params}')"
   curl -fsS -m 120 "http://localhost:$port/lsp" -X POST \
     -H 'Content-Type: application/json' \
-    -d "$payload" || die "lsp call failed"
+    -d "$payload" || die "lsp call failed (method=$method) — verify method name via '$0 tools' and daemon health via '$0 status'"
   echo
 }
 
@@ -147,12 +147,31 @@ cmd_status() {
   [ "$any" = 0 ] && echo "no servers tracked"
 }
 
+cmd_prune() {
+  [ -d "$STATE_ROOT" ] || { echo "no state dir"; return; }
+  local removed=0
+  for dir in "$STATE_ROOT"/*/; do
+    [ -d "$dir" ] || continue
+    local pid port alive=0
+    pid="$(state_get "$dir" pid)"
+    port="$(state_get "$dir" port)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then alive=1; fi
+    if [ "$alive" = 0 ] && [ -n "$port" ] && port_ready "$port"; then alive=1; fi
+    if [ "$alive" = 0 ]; then
+      rm -rf "$dir"
+      removed=$((removed+1))
+    fi
+  done
+  echo "pruned $removed dead state dir(s) from $STATE_ROOT"
+}
+
 case "${1:-}" in
   start)  shift; cmd_start "$@" ;;
   call)   shift; cmd_call "$@" ;;
   tools)  shift; cmd_tools "$@" ;;
   stop)   shift; cmd_stop "$@" ;;
   status) shift; cmd_status "$@" ;;
+  prune)  shift; cmd_prune "$@" ;;
   ""|-h|--help)
     cat <<EOF
 ts-direct — proxy typescript-language-server over persistent HTTP; one server per workspace
@@ -163,6 +182,7 @@ usage:
   ts-direct tools                             list LSP method surface
   ts-direct stop [workspace]                  kill server for workspace
   ts-direct status                            show all tracked servers
+  ts-direct prune                            remove state dirs for dead servers
 
 workspace markers (walk-up order): ${WORKSPACE_MARKERS[*]}
 
