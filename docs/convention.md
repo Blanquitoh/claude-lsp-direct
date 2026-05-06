@@ -39,14 +39,15 @@ Same CLI contract, different `call` method surface (named methods, not LSP metho
 ### CLI surface
 All wrappers expose the same subcommands:
 ```
-<name>-direct start|call|stop|status|tools [workspace]
+<name>-direct start|call|stop|status|tools|prune [workspace]
 <name>-direct call <method> '<json-params>' [workspace]
 ```
 - `start` — spawn coordinator for workspace
 - `call` — auto-starts if needed, issues LSP method, returns JSON
 - `stop` — kill coordinator
-- `status` — show all tracked servers
+- `status` — show all tracked servers (`alive` / `dead` / `adopted`)
 - `tools` — list LSP method surface
+- `prune` — remove state dirs whose process is dead AND port is unreachable; safe to run any time
 
 `textDocument/*` params MUST include `textDocument.uri` as `file://<abs-path>`.
 

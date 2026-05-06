@@ -200,9 +200,28 @@ cmd_status() {
     port="$(state_get "$dir" port)"
     alive="dead"
     [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && alive="alive"
+    [ "$alive" = "dead" ] && [ -z "$pid" ] && [ -n "$port" ] && port_ready "$port" && alive="adopted"
     printf 'workspace=%s  port=%s  pid=%s  %s\n' "$ws" "$port" "$pid" "$alive"
   done
   [ "$any" = 0 ] && echo "no servers tracked"
+}
+
+cmd_prune() {
+  [ -d "$STATE_ROOT" ] || { echo "no state dir"; return; }
+  local removed=0
+  for dir in "$STATE_ROOT"/*/; do
+    [ -d "$dir" ] || continue
+    local pid port alive=0
+    pid="$(state_get "$dir" pid)"
+    port="$(state_get "$dir" port)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then alive=1; fi
+    if [ "$alive" = 0 ] && [ -n "$port" ] && port_ready "$port"; then alive=1; fi
+    if [ "$alive" = 0 ]; then
+      rm -rf "$dir"
+      removed=$((removed+1))
+    fi
+  done
+  echo "pruned $removed dead state dir(s) from $STATE_ROOT"
 }
 
 case "${1:-}" in
@@ -211,6 +230,7 @@ case "${1:-}" in
   tools)  shift; cmd_tools "$@" ;;
   stop)   shift; cmd_stop "$@" ;;
   status) shift; cmd_status "$@" ;;
+  prune)  shift; cmd_prune "$@" ;;
   ""|-h|--help)
     cat <<EOF
 metals-direct — talk to metals-mcp over direct HTTP, bypass claude MCP client overhead
@@ -221,6 +241,7 @@ usage:
   metals-direct tools [workspace]              list available tools (list-modules, get-usages, get-source, get-docs, inspect, glob-search, ...)
   metals-direct stop [workspace]               kill server for workspace
   metals-direct status                         show all tracked servers
+  metals-direct prune                          remove state dirs for dead servers
 
 examples:
   cd ~/projects/your-scala-project && metals-direct start

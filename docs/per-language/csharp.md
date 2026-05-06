@@ -50,3 +50,19 @@ cs-direct call workspace/symbol '{"query":"IUserService"}'
 `~/.cache/cs-direct/<workspace-hash>/{pid,port,workspace,log}`
 
 Inspect `log` if cold start hangs past 180s (the coordinator's own timeout) — MSBuild issues surface there.
+
+## Roslyn LS scaffold (experimental, not yet wired)
+`bin/cs-roslyn-direct` exists as a parallel wrapper targeting Microsoft Roslyn Language Server (the binary shipped with the VS Code C# Dev Kit at `~/.vscode/extensions/ms-dotnettools.csharp-*/.roslyn/Microsoft.CodeAnalysis.LanguageServer`) instead of csharp-ls. Goal: ~10× cold-start improvement on `documentSymbol` for mid-size .NET projects. **Currently NOT installed by `scripts/install.sh`** because the integration is blocked.
+
+### Blocker
+Roslyn LS issues a server→client `workspace/configuration` request during `OnInitializedAsync`. `bin/lsp-stdio-proxy.js` + `bin/adapters/lsp-stdio.js` + `bin/tool-server-proxy.js` are uni-directional (client→server only). Without a response, Roslyn LS hits `Contract.Fail` in `DidChangeConfigurationNotificationHandler.cs:128` and SIGABRTs. csharp-ls works because it does NOT issue reverse-RPC.
+
+### Resumption path
+Extend `bin/adapters/lsp-stdio.js` to detect server-initiated requests (incoming JSON-RPC with `method`+`id` but no `result`/`error`). Inject canned responses for known reverse-RPCs:
+- `workspace/configuration` → return `[{}]` per item in `params.items` (empty config object array)
+- `client/registerCapability` → return `null` (accept all dynamic registrations)
+- `window/workDoneProgress/create` → return `null`
+
+Alternative: forward server-initiated requests to a side-channel HTTP endpoint so the wrapper or upstream caller can respond.
+
+After the proxy supports reverse-RPC, wire `cs-roslyn-direct` into `scripts/install.sh` as the recommended C# wrapper, deprecate `cs-direct`. Benchmark target: csharp-ls measured at ~2.18s on `documentSymbol` warm-call against a single-file project; Roslyn LS expected to land sub-300ms based on VS Code C# Dev Kit characteristics.
