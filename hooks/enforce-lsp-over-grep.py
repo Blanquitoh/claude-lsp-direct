@@ -19,6 +19,14 @@ HOME = Path(os.environ.get("HOME", str(Path.home())))
 AVAIL_FILE = HOME / ".claude" / "locks" / "lsp-availability.json"
 PLUGINS_FILE = HOME / ".claude" / "plugins" / "installed_plugins.json"
 METRICS_LOG = HOME / ".claude" / ".metrics" / "lsp-grep-blocks.log"
+# escalation: repeated grep-on-source blocks for the same lang within a session →
+# louder, tool-specific directive. counter reset by redeem-lsp-debt.py on <lang>-direct use.
+BLOCK_COUNTS_FILE = HOME / ".claude" / "locks" / "lsp-grep-block-counts.json"
+ESCALATE_THRESHOLD = 3
+DIRECT_WRAPPER_NAME = {
+    "scala": "metals-direct", "vue": "vue-direct", "python": "py-direct",
+    "typescript": "ts-direct", "csharp": "cs-direct", "java": "java-direct",
+}
 
 
 def _log_block(payload: dict, tool_name: str, pattern_excerpt: str, reason: str) -> None:
@@ -200,6 +208,8 @@ def lsp_suggestion(lang: str, avail: dict) -> Optional[str]:
                 f"use vue-direct instead of grep on *.vue:\n"
                 f"  ~/.claude/bin/vue-direct call textDocument/documentSymbol '{{\"textDocument\":{{\"uri\":\"file://<abs-path>\"}}}}' {info.get('workspace','')}\n"
                 f"  ~/.claude/bin/vue-direct call textDocument/hover '{{\"textDocument\":{{\"uri\":\"file://<abs-path>\"}},\"position\":{{\"line\":N,\"character\":N}}}}' {info.get('workspace','')}\n"
+                f"  ~/.claude/bin/vue-direct batch <method> /abs/A.vue /abs/B.vue /abs/C.vue   # MUST use batch when querying >=2 files with same method\n"
+                f"  ~/.claude/bin/vue-direct batch-json '<json-array of {{method,params}}>'   # multi-method fan-out\n"
                 f"  ~/.claude/bin/vue-direct tools   # list LSP method surface\n"
                 f"grep remains valid for non-source files (template html, config). state explicitly why vue-direct could not answer before falling back."
             )
@@ -218,6 +228,8 @@ def lsp_suggestion(lang: str, avail: dict) -> Optional[str]:
                 f"  ~/.claude/bin/{wrapper_name} call textDocument/documentSymbol '{{\"textDocument\":{{\"uri\":\"file://<abs-path>\"}}}}'\n"
                 f"  ~/.claude/bin/{wrapper_name} call textDocument/references '{{\"textDocument\":{{\"uri\":\"file://<abs-path>\"}},\"position\":{{\"line\":N,\"character\":N}},\"context\":{{\"includeDeclaration\":true}}}}'\n"
                 f"  ~/.claude/bin/{wrapper_name} call workspace/symbol '{{\"query\":\"<name>\"}}'\n"
+                f"  ~/.claude/bin/{wrapper_name} batch <method> /abs/A /abs/B /abs/C   # MUST use batch when querying >=2 files with same method\n"
+                f"  ~/.claude/bin/{wrapper_name} batch-json '<json-array of {{method,params}}>'   # multi-method fan-out\n"
                 f"  ~/.claude/bin/{wrapper_name} tools   # list LSP method surface\n"
                 f"grep remains valid for non-source files (config, markdown, data)."
             )
@@ -301,9 +313,12 @@ def detect_langs_native_grep(inp: dict) -> set:
     return langs
 
 
+SEARCH_TOOL_HEADS = {"grep", "egrep", "fgrep", "rg", "find", "fd", "ack", "ag"}
+
+
 def is_search_tool(cmd: str) -> bool:
     head = cmd.strip().split()[0] if cmd.strip() else ""
-    return head in {"grep", "egrep", "fgrep", "rg", "find", "fd", "ack", "ag"}
+    return head in SEARCH_TOOL_HEADS
 
 
 # recursive grep/rg without any file-type scope is an ambiguous-intent bypass of enforce-lsp-over-grep:
@@ -341,6 +356,157 @@ def is_unscoped_recursive_grep(cmd: str) -> bool:
     return True
 
 
+# --- compound-command decomposition --------------------------------------------------
+# the head-only checks (is_search_tool / is_unscoped_recursive_grep) inspect cmd.split()[0]
+# only — so `cd x && grep ...`, `VAR=y; grep ...`, `cat f | rg ...`, `bash -c 'grep ...'`,
+# `( grep ... )`, `echo $(grep ...)`, `find ... | xargs grep ...` slipped past. decompose
+# every Bash command into top-level segments + unwrap one level of `bash -c '<payload>'` and
+# strip a leading `xargs [flags ...]`, then run the per-segment checks on each piece.
+_BASH_C_RE = re.compile(
+    r"""(?:^|[\s;&|(`])(?:bash|sh|zsh|dash)\s+-[A-Za-z]*c[A-Za-z]*\s+('(?:[^'])*'|"(?:\\.|[^"\\])*")"""
+)
+# xargs flags that consume the following token (so the command head is not mistaken for the value)
+_XARGS_VALUE_FLAGS = {
+    "-I", "-i", "-n", "-L", "-l", "-P", "-s", "-E", "-d", "-a",
+    "--max-args", "--max-lines", "--max-procs", "--max-chars",
+    "--replace", "--delimiter", "--arg-file", "--eof",
+}
+# top-level command separators: ; newline | || & && ( ) ` { } — split when NOT inside quotes
+_SEP_CHARS = set(";\n|&()`{}")
+
+
+def _split_top_level(cmd: str) -> list:
+    """split a shell command line into command segments on unquoted separators.
+    best-effort lexer — not a full shell parser; on unbalanced quotes, returns [cmd] whole
+    (deny-gate floor: never less detection than the original head-only check)."""
+    segs, buf, i, n, quote = [], [], 0, len(cmd), None
+    while i < n:
+        c = cmd[i]
+        if quote is not None:
+            buf.append(c)
+            if c == "\\" and quote == '"' and i + 1 < n:
+                buf.append(cmd[i + 1]); i += 2; continue
+            if c == quote:
+                quote = None
+            i += 1; continue
+        if c in ("'", '"'):
+            quote = c; buf.append(c); i += 1; continue
+        if c == "\\" and i + 1 < n:
+            buf.append(c); buf.append(cmd[i + 1]); i += 2; continue
+        if c in _SEP_CHARS:
+            segs.append("".join(buf)); buf = []
+            # collapse the two-char operators (&& || ) into a single boundary
+            if c in ("&", "|") and i + 1 < n and cmd[i + 1] == c:
+                i += 2
+            else:
+                i += 1
+            continue
+        buf.append(c); i += 1
+    if quote is not None:
+        return [cmd]
+    segs.append("".join(buf))
+    return segs
+
+
+def _strip_xargs_prefix(seg: str) -> str:
+    """strip a leading `xargs [flags ...]` so the wrapped command head is exposed."""
+    toks = seg.split()
+    if not toks or toks[0] != "xargs":
+        return seg
+    j = 1
+    while j < len(toks):
+        t = toks[j]
+        if not t.startswith("-"):
+            break
+        bare = t.split("=", 1)[0]
+        j += 1
+        # `-n 1` / `-I {}` style: skip the following token too (unless it's another flag)
+        if bare in _XARGS_VALUE_FLAGS and len(t) == len(bare) and j < len(toks) and not toks[j].startswith("-"):
+            j += 1
+    return " ".join(toks[j:])
+
+
+def _shell_segments(cmd: str) -> list:
+    """top-level segments of cmd, plus payloads of `bash -c '...'`, with xargs prefixes stripped."""
+    out = []
+    for top in _split_top_level(cmd):
+        s = top.strip()
+        if not s:
+            continue
+        m = _BASH_C_RE.search(s)
+        if m:
+            inner = m.group(1)[1:-1]  # drop the surrounding quotes
+            out.extend(_shell_segments(inner))
+            continue
+        out.append(_strip_xargs_prefix(s))
+    return out
+
+
+def scan_bash_command(cmd: str) -> tuple:
+    """analyze a (possibly compound) Bash command; returns (unscoped_recursive, langs).
+    unscoped_recursive: any segment is an unscoped recursive grep/rg.
+    langs: set of code languages targeted by extension across all search-tool segments."""
+    segments = [s for s in (seg.strip() for seg in _shell_segments(cmd)) if s]
+    if not any(is_search_tool(s) for s in segments):
+        return (False, set())
+    unscoped = any(is_unscoped_recursive_grep(s) for s in segments)
+    langs: set = set()
+    for s in segments:
+        langs |= detect_langs(s)
+    return (unscoped, langs)
+
+
+# --- escalation ----------------------------------------------------------------------
+def _bump_block_count(session_id: str, langs: list) -> dict:
+    """increment per-(session,lang) block counters; return {lang: new_count} for the bumped langs.
+    best-effort — disk errors are non-fatal (escalation is advisory polish, never the gate itself)."""
+    if not session_id or not langs:
+        return {}
+    try:
+        data = json.loads(BLOCK_COUNTS_FILE.read_text())
+        if not isinstance(data, dict):
+            data = {}
+    except Exception:
+        data = {}
+    try:
+        if BLOCK_COUNTS_FILE.exists() and BLOCK_COUNTS_FILE.stat().st_size > 64 * 1024:
+            data = {}  # prune runaway file — keep only this session below
+    except Exception:
+        pass
+    sess = data.setdefault(session_id, {})
+    out = {}
+    for lang in langs:
+        try:
+            sess[lang] = int(sess.get(lang, 0)) + 1
+        except (TypeError, ValueError):
+            sess[lang] = 1
+        out[lang] = sess[lang]
+    try:
+        BLOCK_COUNTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = BLOCK_COUNTS_FILE.with_name(BLOCK_COUNTS_FILE.name + ".tmp")
+        tmp.write_text(json.dumps(data))
+        os.replace(str(tmp), str(BLOCK_COUNTS_FILE))
+    except Exception:
+        pass
+    return out
+
+
+def _escalation_banner(counts: dict) -> str:
+    """counts: {lang: n}. loud directive for any lang at/over ESCALATE_THRESHOLD; '' otherwise."""
+    hot = sorted(l for l, n in counts.items() if isinstance(n, int) and n >= ESCALATE_THRESHOLD)
+    if not hot:
+        return ""
+    lines = ["🛑 ESCALATION — repeated grep-on-source blocks this session:"]
+    for lang in hot:
+        wrapper = DIRECT_WRAPPER_NAME.get(lang, f"{lang}-direct")
+        lines.append(
+            f"  {lang}: blocked {counts[lang]}× — STOP issuing Bash/Grep searches on {lang} source. "
+            f"the ONLY acceptable next tool call for {lang} is ~/.claude/bin/{wrapper} (see per-language "
+            f"commands below). do NOT vary the grep/find command and retry — switch tools."
+        )
+    return "\n".join(lines) + "\n\n"
+
+
 def main() -> None:
     try:
         payload = json.load(sys.stdin)
@@ -352,9 +518,10 @@ def main() -> None:
     source = ""
     if tool_name == "Bash":
         cmd = inp.get("command", "")
-        if not cmd or not is_search_tool(cmd):
+        if not cmd:
             sys.exit(0)
-        if is_unscoped_recursive_grep(cmd):
+        unscoped, langs = scan_bash_command(cmd)
+        if unscoped:
             sys.stderr.write(
                 "BLOCKED by enforce-lsp-over-grep: unscoped recursive grep/rg\n"
                 "philosophy: LSP for all source-code questions (see lib/rules-on-demand/lsp.md § philosophy). "
@@ -369,7 +536,6 @@ def main() -> None:
             )
             _log_block(payload, tool_name, cmd, "unscoped_recursive_grep_bash")
             sys.exit(2)
-        langs = detect_langs(cmd)
         source = "Bash: " + cmd[:200] + ("..." if len(cmd) > 200 else "")
     elif tool_name == "Grep":
         langs = detect_langs_native_grep(inp)
@@ -384,6 +550,7 @@ def main() -> None:
         avail = {}
     msgs = []
     block = False
+    blocked_langs = []
     for lang in sorted(langs):
         sug = lsp_suggestion(lang, avail)
         if sug is None:
@@ -391,8 +558,13 @@ def main() -> None:
         msgs.append(f"--- {lang} ---\n{sug}")
         if not sug.startswith("[WARN not block]"):
             block = True
+            blocked_langs.append(lang)
     if not msgs:
         sys.exit(0)
+    esc = ""
+    if block:
+        counts = _bump_block_count(payload.get("session_id", ""), blocked_langs)
+        esc = _escalation_banner(counts)
     header = (
         "BLOCKED by enforce-lsp-over-grep: use semantic LSP tools on source code\n"
         "philosophy: LSP for all languages. grep/rg/find on code is lossy; misses renames, respects no semantics.\n"
@@ -401,16 +573,17 @@ def main() -> None:
         "WARN from enforce-lsp-over-grep: LSP setup incomplete\n"
         f"{source}\n\n"
     )
-    sys.stderr.write(header + "\n\n".join(msgs) + "\n")
+    sys.stderr.write(esc + header + "\n\n".join(msgs) + "\n")
     if block:
         _log_block(payload, tool_name, source, f"lsp_available_langs:{','.join(sorted(langs))}")
     sys.exit(2 if block else 0)
 
 
 def _selftest() -> int:
-    """inline regex self-test for POS_CODE_FILE_RE pipe/redirect boundary fix.
+    """inline self-test — POS_CODE_FILE_RE boundary fix + compound-command decomposition.
     run: `python3 enforce-lsp-over-grep.py --selftest`"""
-    cases = [
+    failed = 0
+    pos_cases = [
         ('grep "x" /a/b.ts',                    True),   # plain positional code file
         ('grep "x" /a/b.ts | head -20',         True),   # pipe boundary
         ('grep "x" /a/b.ts > out',              True),   # redirect boundary
@@ -420,11 +593,30 @@ def _selftest() -> int:
         ('grep "x" /a/b.ts;echo done',          True),   # real .ts file then ;echo separator
         ("grep 'foo.py' /a/b.md",               False),  # single-quoted pattern variant
     ]
-    failed = 0
-    for cmd, expected_block in cases:
+    for cmd, expected_block in pos_cases:
         matched = bool(POS_CODE_FILE_RE.search(_strip_quoted(cmd)))
         ok = matched == expected_block
-        print(f"{'OK' if ok else 'FAIL'}: {cmd!r} matched={matched} expected={expected_block}")
+        print(f"{'OK' if ok else 'FAIL'}: POS {cmd!r} matched={matched} expected={expected_block}")
+        if not ok:
+            failed += 1
+    # scan_bash_command: (cmd) -> (expect_unscoped, expect_langs) across compound segments
+    scan_cases = [
+        ('cd api && grep -rn "Foo" modules/core/',                  (True, set())),
+        ('MEMDIR=x; grep -rln --include="*.scala" Foo /a/b',        (False, {"scala"})),
+        ('git diff main | grep -n "def foo"',                       (False, set())),
+        ('bash -c "grep -rn Foo /a/b --include=*.scala"',           (False, {"scala"})),
+        ('cat foo.txt; rg "MatchUpId" /a/b/scala-dir',              (True, set())),
+        ('find /x/api -name "*.scala" | xargs grep -l Foo',         (False, {"scala"})),
+        ('echo $(grep -rn Foo /x --include=*.py)',                  (False, {"python"})),
+        ('( grep -rn Foo /x/web --include=*.vue )',                 (False, {"vue"})),
+        ('npm test 2>&1 | grep -i error',                           (False, set())),
+        ('cat changelog.md; rg "v1.2.3" docs/',                     (False, set())),
+        ('ls -la && echo done',                                     (False, set())),
+    ]
+    for cmd, expected in scan_cases:
+        got = scan_bash_command(cmd)
+        ok = got == expected
+        print(f"{'OK' if ok else 'FAIL'}: SCAN {cmd!r} -> {got} expected={expected}")
         if not ok:
             failed += 1
     return 0 if failed == 0 else 1

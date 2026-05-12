@@ -424,5 +424,113 @@ def test_strip_quoted_handles_locale_dollar_double(hook_module):
     assert langs == set(), f"expected no lang detection, got {langs}"
 
 
+# ---------- compound-command decomposition (close the head-only bypass) ----------
+
+
+def _scala_ready(home: Path) -> None:
+    """fake_home with scala (metals-direct), python (py-direct), vue (vue-direct) all ready."""
+    for name in ("py-direct", "vue-direct"):
+        (home / ".claude" / "bin" / name).write_text("#!/bin/sh\nexit 0")
+        (home / ".claude" / "bin" / name).chmod(0o755)
+    _write_availability(home, {"lsps": {
+        "scala":  {"tool": "metals-direct", "binary": "/x", "backend": "metals-mcp", "workspace": "/w"},
+        "python": {"tool": "py-direct", "binary": str(home / ".claude" / "bin" / "py-direct"),
+                   "backend": "pyright-langserver", "workspace": "/w"},
+        "vue":    {"tool": "vue-direct", "binary": str(home / ".claude" / "bin" / "vue-direct"),
+                   "backend": "vue-language-server", "workspace": "/w"},
+    }})
+
+
+@pytest.mark.parametrize("cmd,needle", [
+    # search tool is NOT the first token — was a silent bypass before
+    ('cd api && grep -rn Foo modules/core/',                  "unscoped recursive"),
+    ('MEMDIR=x; grep -rln --include="*.scala" Foo /repo/api', "metals-direct"),
+    ('cat list.txt | rg MatchUpId /repo/api/scala-src',       "unscoped recursive"),
+    ('find /repo/api -name "*.scala" | xargs grep -l Foo',    "metals-direct"),
+    ('bash -c "grep -rn Foo /repo --include=*.scala"',        "metals-direct"),
+    ('echo $(grep -rn Foo /repo --include=*.py)',             "py-direct"),
+    ('( grep -rn Foo /repo/web --include=*.vue )',            "vue-direct"),
+])
+def test_compound_command_still_blocked(fake_home, cmd, needle):
+    _scala_ready(fake_home)
+    rc, _, err = _run(_bash(cmd), fake_home)
+    assert rc == 2, f"expected BLOCK for compound cmd: {cmd}\n{err}"
+    assert needle in err, f"expected {needle!r} in:\n{err}"
+
+
+@pytest.mark.parametrize("cmd", [
+    'git diff main | grep -n "def foo"',          # grepping git output, no source target
+    'npm test 2>&1 | grep -i error',              # grepping command output
+    'ls -la && echo done',                        # no search tool at all
+    'cd conf && grep -n key messages_es.properties',  # non-source positional file
+    'cat changelog.md; rg "v1.2.3" docs/',        # rg scoped to docs/
+])
+def test_compound_command_legit_passthrough(fake_home, cmd):
+    _scala_ready(fake_home)
+    rc, _, err = _run(_bash(cmd), fake_home)
+    assert rc == 0, f"expected PASS for: {cmd}\n{err}"
+
+
+# ---------- escalation after repeated blocks ----------
+
+
+def test_escalation_banner_after_threshold(fake_home):
+    _scala_ready(fake_home)
+    sid = "esc-session"
+    for _ in range(2):  # first ESCALATE_THRESHOLD-1 blocks: no banner
+        rc, _, err = _run({**_bash('grep -rn Foo /repo --include="*.scala"'), "session_id": sid}, fake_home)
+        assert rc == 2 and "ESCALATION" not in err, err
+    rc, _, err = _run({**_bash('grep -rn Foo /repo --include="*.scala"'), "session_id": sid}, fake_home)
+    assert rc == 2
+    assert "ESCALATION" in err and "metals-direct" in err
+    # different session is unaffected
+    rc, _, err = _run({**_bash('grep -rn Foo /repo --include="*.scala"'), "session_id": "other"}, fake_home)
+    assert rc == 2 and "ESCALATION" not in err, err
+    counts = json.loads((fake_home / ".claude" / "locks" / "lsp-grep-block-counts.json").read_text())
+    assert counts[sid]["scala"] >= 3
+    assert counts["other"]["scala"] == 1
+
+
+def test_unscoped_block_does_not_escalate(fake_home):
+    # unscoped recursive grep has no resolved lang → no counter bump, no banner
+    _write_availability(fake_home, {})
+    for _ in range(5):
+        rc, _, err = _run({**_bash('grep -rn Foo api/'), "session_id": "u"}, fake_home)
+        assert rc == 2 and "ESCALATION" not in err, err
+    assert not (fake_home / ".claude" / "locks" / "lsp-grep-block-counts.json").exists()
+
+
+# ---------- scan_bash_command / escalation helpers (direct) ----------
+
+
+@pytest.mark.parametrize("cmd,expected", [
+    ('cd api && grep -rn Foo modules/',                  (True, set())),
+    ('VAR=x; grep -rln --include=*.scala Foo /a/b',      (False, {"scala"})),
+    ('find /x -name "*.scala" | xargs grep -l Foo',      (False, {"scala"})),
+    ('bash -c "grep -rn Foo /a --include=*.py"',         (False, {"python"})),
+    ('echo $(grep -rn Foo /a --include=*.vue)',          (False, {"vue"})),
+    ('git diff | grep -n def',                           (False, set())),
+    ('ls -la && echo hi',                                (False, set())),
+    ('grep -rn Foo /a/b.ts',                             (False, {"typescript"})),
+])
+def test_scan_bash_command(hook_module, cmd, expected):
+    assert hook_module.scan_bash_command(cmd) == expected
+
+
+def test_bump_block_count_and_banner(hook_module, tmp_path, monkeypatch):
+    counts_file = tmp_path / "block-counts.json"
+    monkeypatch.setattr(hook_module, "BLOCK_COUNTS_FILE", counts_file)
+    assert hook_module._bump_block_count("", ["scala"]) == {}          # no session → no-op
+    assert hook_module._bump_block_count("s", []) == {}                # no langs → no-op
+    assert hook_module._bump_block_count("s", ["scala"]) == {"scala": 1}
+    assert hook_module._bump_block_count("s", ["scala"]) == {"scala": 2}
+    assert hook_module._bump_block_count("s", ["scala"]) == {"scala": 3}
+    assert hook_module._escalation_banner({"scala": 2}) == ""          # below threshold
+    banner = hook_module._escalation_banner({"scala": 3, "python": 1})
+    assert "ESCALATION" in banner and "metals-direct" in banner
+    assert "py-direct" not in banner                                   # python under threshold
+    assert json.loads(counts_file.read_text())["s"]["scala"] == 3
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
